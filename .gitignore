@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+ENV/
+.env
+.python-version
+uv.lock
+
+# data
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+result
+post_article/*
+data_cache/*
+analysis_results/*
+
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+llm_outputs/
+generated_images/
+*.db
+*.sqlite3
+
+# Credentials
+credentials/ 
