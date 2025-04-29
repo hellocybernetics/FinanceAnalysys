@@ -127,43 +127,38 @@ def custom_trix(df, period=14):
     return df['Trix'], df['Trix_Signal']
 
 # Chande Momentum Oscillator (CMO)
-def chande_momentum_oscillator(df, period=14):
-    df['CMO'] = ((df['Close'] - df['Close'].shift(period)).rolling(window=period).sum()) / \
-                ((df['Close'] - df['Close'].shift(1)).abs().rolling(window=period).sum()) * 100
-    return df['CMO']
+def chande_momentum_oscillator_talib(close_prices, period=14):
+    return talib.CMO(close_prices, timeperiod=period)
 
 # Trix Indicator
-def trix(df, period=14):
-    df['Trix'] = df['Close'].ewm(span=period, min_periods=period).mean()
-    df['Trix_Signal'] = df['Trix'].ewm(span=period, min_periods=period).mean()
-    return df['Trix'], df['Trix_Signal']
+def trix_talib(close_prices, period=14):
+    trix_val = talib.TRIX(close_prices, timeperiod=period)
+    trix_signal = talib.EMA(trix_val, timeperiod=9) # Use 9-period EMA for signal
+    return trix_val, trix_signal
 
-# シグナル生成
-def generate_signals(df, cmo_period, trix_period):
+# シグナル生成 (空売り対応)
+def generate_signals(df_close, cmo_period, trix_period):
+    """CMOとTrixに基づいてロング・ショートシグナルを生成"""
+    cmo = chande_momentum_oscillator_talib(df_close, period=cmo_period)
+    trix, trix_signal = trix_talib(df_close, period=trix_period)
 
-    df['CMO'] = chande_momentum_oscillator(df, cmo_period)
-    df['Trix'], df['Trix_Signal'] = trix(df, trix_period)
+    # ロングシグナル
+    entries_pd = (cmo > 0) & (trix > trix_signal) & (trix.shift(1) <= trix_signal.shift(1))
+    exits_pd = (cmo < 0) & (trix < trix_signal) & (trix.shift(1) >= trix_signal.shift(1))
 
+    # ショートシグナル (対称ロジック)
+    short_entries_pd = exits_pd.copy()
+    short_exits_pd = entries_pd.copy()
 
-    # Define entry and exit signals based on CMO and Trix
-    df['Entry'] = (
-        (df['CMO'] > 0) &  # CMO crosses above 0
-        (df['Trix'] > df['Trix_Signal'])   # Trix crosses above Trix Signal line
+    return (
+        entries_pd.to_numpy(),
+        exits_pd.to_numpy(),
+        short_entries_pd.to_numpy(),
+        short_exits_pd.to_numpy(),
     )
-
-    df['Exit'] = (
-        (df['CMO'] < 0) &  # CMO crosses below 0
-        (df['Trix'] < df['Trix_Signal'])   # Trix crosses below Trix Signal line
-    )
-
-    # Convert signals to boolean arrays
-    entries = df['Entry'].to_numpy()
-    exits = df['Exit'].to_numpy()
-    return entries, exits
-
 
 # バックテストの実行
-def run_backtest(df, initial_capital=100000, base_dir='result'):
+def run_backtest(df, initial_capital=100000, base_dir='result', allow_shorting=True):
     try:
         # データ型の確認と変換
         if not isinstance(df['Close'].dtype, np.float64):
@@ -174,107 +169,254 @@ def run_backtest(df, initial_capital=100000, base_dir='result'):
             df.index = pd.to_datetime(df.index, utc=True).tz_convert('UTC').tz_localize(None)
         
         # インデックスの頻度を確認と設定
-        df = df.resample('D').last()
+        df = df.resample('D').ffill()
+        df.index.freq = df.index.inferred_freq
+        df.dropna(subset=['Close'], inplace=True)
         
         # Define the range of periods for optimization
-        cmo_period_range = range(2, 21)  # CMO period starts from 2
-        trix_period_range = range(2, 21)  # Example range for Trix period
+        cmo_period_range = range(5, 21)  # CMO period starts from 5
+        trix_period_range = range(5, 21)  # Example range for Trix period
 
         # Create an empty matrix to store the total returns for each combination of periods
-        total_returns_matrix = np.zeros((len(cmo_period_range), len(trix_period_range)))
-        all_portfolios = [[[] for _ in range(len(trix_period_range))] for _ in range(len(cmo_period_range))]
+        total_returns_matrix = np.full((len(cmo_period_range), len(trix_period_range)), np.nan)
+        portfolios_dict = {}
+
+        print("最適化ループを開始...")
         # Loop over all combinations of periods and store the total returns
         for i, cmo_period in enumerate(cmo_period_range):
             for j, trix_period in enumerate(trix_period_range):
-                entries, exits = generate_signals(df, cmo_period, trix_period)
-                portfolio = vbt.Portfolio.from_signals(
-                    df['Close'],
-                    entries,
-                    exits,
-                    init_cash=initial_capital,  # initial capital
-                    fees=0.0002,  # trading fees
-                    freq='D'  # daily frequency
+                # シグナル生成 (4つの配列を受け取る)
+                entries, exits, short_entries, short_exits = generate_signals(
+                    df['Close'], cmo_period, trix_period
                 )
-                total_returns_matrix[i, j] = portfolio.total_return()
-                all_portfolios[i][j].append(portfolio)
 
-        # Find the best parameters based on the highest total return
-        best_cmo_period_idx, best_trix_period_idx = np.unravel_index(np.argmax(total_returns_matrix), total_returns_matrix.shape)
+                # エントリーシグナルがない場合はスキップ
+                if not np.any(entries) and (not allow_shorting or not np.any(short_entries)):
+                    total_returns_matrix[i, j] = -1 # または np.nan
+                    continue
+
+                # ポートフォリオ引数の構築
+                portfolio_kwargs = {
+                    'close': df['Close'],
+                    'entries': entries,
+                    'exits': exits,
+                    'freq': df.index.freq,
+                    'init_cash': initial_capital,
+                    'fees': 0.001, # 手数料を少し変更
+                    'sl_stop': 0.05 # 例: 固定ストップロス 5%
+                }
+                if allow_shorting:
+                    portfolio_kwargs['short_entries'] = short_entries
+                    portfolio_kwargs['short_exits'] = short_exits
+
+                # ポートフォリオシミュレーション
+                try:
+                    portfolio = vbt.Portfolio.from_signals(**portfolio_kwargs)
+                    total_returns_matrix[i, j] = portfolio.total_return()
+                    portfolios_dict[(cmo_period, trix_period)] = portfolio
+                except Exception as pf_exc:
+                    print(f"Error running portfolio for CMO={cmo_period}, Trix={trix_period}: {pf_exc}")
+                    total_returns_matrix[i, j] = np.nan
+            print(f"CMO Period {cmo_period} Done.") # 進捗表示
+
+        # --- 最適化結果の処理 ---
+        if np.isnan(total_returns_matrix).all():
+            print("有効なリターンが得られませんでした。")
+            return None
+
+        # 最適パラメータ特定
+        best_cmo_period_idx, best_trix_period_idx = np.unravel_index(
+            np.nanargmax(total_returns_matrix), total_returns_matrix.shape
+        )
         best_cmo_period = cmo_period_range[best_cmo_period_idx]
         best_trix_period = trix_period_range[best_trix_period_idx]
+        best_return = total_returns_matrix[best_cmo_period_idx, best_trix_period_idx]
 
-        print(f"Best CMO Period: {best_cmo_period}")
+        print(f"\nBest CMO Period: {best_cmo_period}")
         print(f"Best Trix Period: {best_trix_period}")
-        print(f"Best Total Return: {total_returns_matrix[best_cmo_period_idx, best_trix_period_idx]}")
+        print(f"Best Total Return: {best_return:.2%}")
 
-        # Plot the heatmap of total returns
+        # --- プロット --- 
+        # 1. ヒートマップ
         plt.figure(figsize=(10, 8))
-        sns.heatmap(total_returns_matrix, annot=False, cmap="YlGnBu", xticklabels=trix_period_range, yticklabels=cmo_period_range)
-        plt.title('Heatmap of Total Returns for CMO and Trix Periods')
+        sns.heatmap(
+            total_returns_matrix,
+            annot=False,
+            cmap="viridis", # Changed colormap
+            xticklabels=trix_period_range,
+            yticklabels=cmo_period_range
+        )
+        plt.title('Total Return Heatmap (CMO vs Trix Periods)')
         plt.xlabel('Trix Period')
         plt.ylabel('CMO Period')
-        
+        plt.tight_layout()
+        # plt.show() # Temporarily disable plot showing -> Re-enable heatmap plot
+        plt.show()
 
-        # 結果の表示
-        print("\n=== バックテスト結果 ===")
-        
-        # 最適なパラメータでのポートフォリオを取得
-        portfolio = all_portfolios[best_cmo_period_idx][best_trix_period_idx][0]
-        
-        # 基本統計情報の取得と保存
-        stats = portfolio.stats()
-        stats_dict = stats.to_dict()
-        
-        # 統計情報に最適パラメータを追加
-        stats_dict['best_parameters'] = {
-            'cmo_period': best_cmo_period,
-            'trix_period': best_trix_period
-        }
-        
-        # TimestampとTimedeltaオブジェクトを文字列に変換
-        def convert_timestamps(obj):
-            if isinstance(obj, pd.Timestamp):
-                return obj.strftime('%Y-%m-%d %H:%M:%S')
-            elif isinstance(obj, pd.Timedelta):
-                return str(obj)
-            elif isinstance(obj, dict):
-                return {k: convert_timestamps(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_timestamps(item) for item in obj]
-            return obj
-        
+        # 最適ポートフォリオ取得
+        best_pf = portfolios_dict.get((best_cmo_period, best_trix_period))
 
-        
-        # ポートフォリオのプロット
+        if best_pf is None:
+            print("最適ポートフォリオが見つかりませんでした。")
+            return None
+
+        stats = best_pf.stats()
+
+        # Calculate estimated position size -> REMOVED THIS BLOCK
+        # position_size = None
+        # try:
+        #     position_size = ((best_pf.value() - best_pf.cash()) / best_pf.close).fillna(0)
+        # except Exception as e:
+        #     st.warning(f"ポジションサイズの計算中にエラーが発生しました: {e}")
+
+        # --- Accurate Position Size Calculation --- 
+        print("\nCalculating accurate position size from trades...")
+        accurate_position_size = pd.Series(0.0, index=df.index) # Initialize with zeros based on original df index
         try:
-            print("\nプロットを生成中...")
-            # プロットの生成
-            fig = portfolio.plot()
-            fig.show()
+            records_df = best_pf.trades.records
+            if not records_df.empty:
+                # Ensure indices are within the bounds of the main df index
+                entry_indices = df.index[records_df['entry_idx']]
+                exit_indices = df.index[records_df['exit_idx']]
+                
+                # Calculate entry changes (+size for long, -size for short)
+                entry_adj_size = records_df['size'] * np.where(records_df['direction'] == 0, 1, -1)
+                entry_changes = pd.Series(entry_adj_size.values, index=entry_indices)
+
+                # Calculate exit changes (-size for long, +size for short)
+                exit_adj_size = -entry_adj_size 
+                exit_changes = pd.Series(exit_adj_size.values, index=exit_indices)
+
+                # Combine entry and exit changes
+                all_changes = pd.concat([entry_changes, exit_changes])
+
+                # Group by index (timestamp) and sum changes happening at the same time
+                net_changes = all_changes.groupby(all_changes.index).sum()
+
+                # Align with the main dataframe index and calculate cumulative sum
+                aligned_changes, _ = net_changes.align(accurate_position_size, fill_value=0.0)
+                accurate_position_size = aligned_changes.cumsum()
+                print("Accurate position size calculated successfully.")
+            else:
+                print("No trades found in records, position size remains 0.")
+        except Exception as calc_err:
+            print(f"ポジションサイズの正確な計算中にエラー: {calc_err}")
+            accurate_position_size = None # Indicate failure
+        # --- End Accurate Position Size Calculation ---
+
+        # --- Debugging Final Position ---
+        print("\n--- Debugging Final Position --- S")
+        try:
+            stats_for_debug = best_pf.stats() # Get stats for End Value
+            end_value_from_stats = stats_for_debug.get('End Value', np.nan)
             
+            print("Last 5 Trade Records:")
+            # Use display options to show more columns if needed
+            with pd.option_context('display.max_rows', 5, 'display.max_columns', None, 'display.width', 1000):
+                print(best_pf.trades.records.tail()) # Print last few trade records
             
+            if accurate_position_size is not None:
+                 print("\nCalculated Position Size (Last 5 days):")
+                 print(accurate_position_size.tail()) # Print last few calculated position values
+                 final_calc_pos = accurate_position_size.iloc[-1]
+                 prev_calc_pos = accurate_position_size.iloc[-2] if len(accurate_position_size) > 1 else 0.0
+                 print(f"Final calculated position size: {final_calc_pos}")
+                 print(f"Previous day's calculated position size: {prev_calc_pos}")
+                 
+                 print("\nPortfolio Value (Last 5 days):")
+                 print(best_pf.value().tail())
+                 print("\nCash Value (Last 5 days):")
+                 print(best_pf.cash().tail())
+                 
+                 final_cash = best_pf.cash().iloc[-1]
+                 final_close = best_pf.close.iloc[-1]
+                 
+                 print(f"\nStats End Value: {end_value_from_stats:,.2f}")
+                 print(f"Final Cash: {final_cash:,.2f}")
+                 print(f"Final Close Price: {final_close:,.2f}")
+                 
+                 # Check consistency: Does Final Cash equal Stats End Value if final position is 0?
+                 print(f"Is Final Cash approximately equal to Stats End Value? {np.isclose(final_cash, end_value_from_stats)}")
+                 
+                 # Calculate what End Value would be if previous day's position was held
+                 estimated_end_value_if_held = final_cash + (prev_calc_pos * final_close)
+                 print(f"Estimated End Value if prev position was held: {estimated_end_value_if_held:,.2f}")
+                 
+            else:
+                 print("Accurate position size calculation failed.")
+                 
+            # Also check the status of the last trade directly
+            if not best_pf.trades.records.empty:
+                 last_trade = best_pf.trades.records.iloc[-1]
+                 print(f"\nStatus of the last trade (id={last_trade['id']}): {last_trade['status']}")
+                 # Cast indices to int for comparison and indexing
+                 entry_idx_int = last_trade['entry_idx'].astype(int)
+                 exit_idx_int = last_trade['exit_idx'].astype(int)
+                 print(f"  Entry Idx: {entry_idx_int}, Exit Idx: {exit_idx_int}") 
+                 last_df_index = df.index[-1]
+                 # Check if exit_idx exists and corresponds to the last day
+                 if pd.notna(last_trade['exit_idx']) and df.index[exit_idx_int] == last_df_index: 
+                     print(f"  Note: Last trade exited on the last day ({last_df_index.date()}).")
+
+        except Exception as debug_err:
+            print(f"Error during final position debugging: {debug_err}")
+        print("--- Debugging Final Position --- E")
+        # --- End Debugging ---
+
+        # Generate portfolio plot for the best parameters
+        print("\nPlotting best portfolio performance...")
+        try:
+            fig_pf = best_pf.plot(subplots=[
+                # 'position', # Removed position plot due to warning
+                'orders',
+                'trade_pnl',
+                'cum_returns'
+            ])
+            fig_pf.show() # Ensure this is enabled
         except Exception as e:
-            print(f"プロットの生成中にエラーが発生しました: {str(e)}")
-            print("代わりに基本的なパフォーマンス指標を表示します。")
-            print(f"累積リターン: {portfolio.cumulative_returns().iloc[-1]:.2%}")
-            print(f"最大ドローダウン: {portfolio.max_drawdown():.2%}")
-            print(f"取引回数: {len(portfolio.orders)}")
-        
-        return portfolio
+            # Restore original error handling for portfolio plot
+            print(f"ポートフォリオプロット中にエラー: {str(e)}")
+            print("基本指標を表示:")
+            print(f"  累積リターン: {best_pf.cumulative_returns().iloc[-1]:.2%}")
+            print(f"  最大ドローダウン: {best_pf.max_drawdown():.2%}")
+            print(f"  取引回数: {len(best_pf.orders)}")
+
+        # 3. ポジション推移のプロット (正確な値)
+        if accurate_position_size is not None and not accurate_position_size.empty:
+            print("\nPlotting accurate positions...")
+            plt.figure(figsize=(15, 5))
+            # Plot the calculated accurate position size
+            plt.plot(accurate_position_size.index, accurate_position_size.values, label='Accurate Position Size') 
+            plt.title(f'Accurate Position Size Over Time (CMO={best_cmo_period}, Trix={best_trix_period})') 
+            plt.ylabel('Position Size (Shares)')
+            plt.xlabel('Date')
+            plt.grid(True, linestyle='dotted')
+            plt.axhline(0, color='black', linewidth=0.5) # Zero line
+            plt.tight_layout()
+            plt.show() # Ensure this is enabled
+        elif accurate_position_size is not None: # Handle empty case (e.g., no trades)
+             print("計算された正確なポジションサイズが空かゼロのみです。プロットをスキップします。")
+        else: # Handle calculation error case
+             print("ポジションサイズの計算に失敗したため、プロットをスキップします。")
+
+        return best_pf # Return the best portfolio object
+
     except Exception as e:
         print(f"バックテスト実行中にエラーが発生しました: {str(e)}")
+        import traceback
+        traceback.print_exc() # Print full traceback for debugging
         raise
 
 # メイン処理
 def main():
     # パラメータの設定
-    symbol = 'AAPL'  # S&P 500 ETF
-    period = '2y'  # 1年間のデータを取得
-    interval = '1d'  # 日次のデータを取得
+    symbol = 'AAPL'
+    period = '2y'
+    interval = '1d'
     initial_capital = 100000
-    use_saved_data = True  # 保存されたデータを使用するかどうか
-    base_dir = 'result'  # ベースディレクトリ
-    
+    use_saved_data = False # Set to False to fetch fresh data for testing
+    base_dir = 'result'
+
     try:
         # データの準備
         df = prepare_data(symbol, period, interval, use_saved=use_saved_data, base_dir=base_dir)
@@ -285,15 +427,18 @@ def main():
         print(f"データ件数: {len(df)}")
         print(f"最初の5行:\n{df.head()}")
 
-        # バックテストの実行
-        portfolio = run_backtest(df, initial_capital, base_dir=base_dir)
+        # バックテストの実行 (空売りを有効に)
+        portfolio = run_backtest(df, initial_capital, base_dir=base_dir, allow_shorting=True)
         
         # 結果の表示
-        print("\n=== バックテスト結果 ===")
-        print(portfolio.stats())
-        
+        if portfolio:
+            print("\n=== バックテスト結果 (最適パラメータ) ===")
+            print(portfolio.stats())
+        else:
+            print("バックテストは完了しましたが、有効な結果は得られませんでした。")
+
     except Exception as e:
-        print(f"エラーが発生しました: {str(e)}")
+        print(f"メイン処理でエラーが発生しました: {str(e)}")
 
 
 if __name__ == '__main__':
