@@ -232,3 +232,92 @@ class MyAnalysisAlgorithm(QCAlgorithm):
 
     # ... (他のメソッド) ...
     ```
+
+## 機械学習機能
+
+### セットアップ
+
+必要なPythonライブラリをインストールします。`uv` がインストールされていることを確認してください。
+
+```bash
+# ML関連の依存関係を追加 (初回のみ)
+uv add mlflow fastapi "uvicorn[standard]" PyYAML python-dotenv scikit-learn pandas numpy yfinance ta-lib
+
+# もし uv add で ta-lib がエラーになる場合、個別にインストールが必要かもしれません
+# 例: Windows 用 Wheel ファイルを使用する場合など (詳細は環境に合わせて調整)
+# uv add lib/ta_lib-0.6.3-cp313-cp313-win_amd64.whl
+
+# プロジェクトの依存関係をインストール/同期
+uv sync
+```
+
+設定ファイル (`config/training_config.yaml`, `config/api_config.yaml`) を確認し、必要に応じて調整してください。特に、特徴量リストやモデルパラメータをカスタマイズできます。
+
+### モデル学習
+
+`scripts/train_model.py` スクリプトを使用してモデルを学習させます。
+
+```bash
+python scripts/train_model.py --symbol AAPL --period 5y --config config/training_config.yaml
+```
+
+*   `--symbol`: 学習対象の銘柄コード (デフォルト: AAPL)
+*   `--period`: 学習に使用するデータの期間 (デフォルト: 5y)
+*   `--config`: 学習設定ファイルのパス (デフォルト: config/training_config.yaml)
+*   `--mlflow_tracking_uri`: (オプション) MLflow Tracking Server の URI
+*   `--experiment_name`: (オプション) MLflow の Experiment 名
+*   `--run_name`: (オプション) MLflow の Run 名
+
+学習が完了すると、パラメータ、メトリクス、学習済みモデル (`model` ディレクトリ内)、およびスケーラー (`preprocessing/scaler.pkl`) が MLflow Run のアーティファクトとして記録されます。デフォルトでは、カレントディレクトリに `mlruns` ディレクトリが作成されます。
+
+### MLflow UI
+
+学習結果を確認するには、MLflow UI を起動します。
+
+```bash
+mlflow ui
+```
+
+ブラウザで `http://localhost:5000` (デフォルト) を開くと、実験結果をインタラクティブに確認できます。
+
+### 予測 (スクリプト)
+
+学習済みモデルを使用して予測を行うには、`scripts/predict.py` スクリプトを使用します。
+
+```bash
+# 例: 特定の MLflow Run ID を指定して予測
+python scripts/predict.py --symbol AAPL --period 1y --model_uri runs:/YOUR_RUN_ID/model --output_file result/predictions/AAPL_predictions.csv --config config/training_config.yaml
+```
+
+*   `--symbol`: 予測対象の銘柄コード
+*   `--period`: 予測に必要な入力データの期間
+*   `--model_uri`: 使用する学習済みモデルの MLflow URI (`runs:/<run_id>/model` の形式)
+*   `--output_file`: (オプション) 予測結果を保存するCSVファイルのパス
+*   `--config`: 特徴量エンジニアリングのパラメータを取得するための設定ファイルパス (学習時と同じものを指定)
+
+### 予測 (API)
+
+学習済みモデルをサービングする FastAPI サーバーを起動できます。
+
+1.  **環境変数の設定 (任意)**:
+    APIが使用するモデルのURIを環境変数 `MODEL_URI` で指定できます。設定しない場合は `config/api_config.yaml` の `default_model_uri` が参照されます。
+    ```bash
+    # 例 (PowerShell):
+    $env:MODEL_URI="runs:/YOUR_RUN_ID/model"
+    # 例 (Bash):
+    export MODEL_URI="runs:/YOUR_RUN_ID/model"
+    ```
+
+2.  **APIサーバーの起動**:
+    ```bash
+    uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+    ```
+
+3.  **APIへのリクエスト**:
+    サーバーが起動したら、別のターミナルから `curl` などでリクエストを送信できます。
+    ```bash
+    curl -X POST http://localhost:8000/predict/AAPL
+    ```
+    成功すると、最新の予測結果がJSON形式で返されます。
+
+APIドキュメントは `http://localhost:8000/docs` で確認できます。
