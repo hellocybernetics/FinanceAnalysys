@@ -66,6 +66,7 @@ dependencies = [
     "six==1.17.0",
     "stack-data==0.6.3",
     "statsmodels>=0.14.4",
+    "streamlit>=1.45.0",
     "ta-lib",
     "tenacity==9.1.2",
     "threadpoolctl==3.6.0",
