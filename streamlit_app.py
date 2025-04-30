@@ -313,7 +313,12 @@ if df_loaded is not None:
                          st.info(f"保存された最適シグナルパラメータを使用: CMO={fixed_signal_params_to_pass.get('cmo_period', 'N/A')}, Trix={fixed_signal_params_to_pass.get('trix_period', 'N/A')}", icon="ℹ️")
                         
                 # Call the backtest function
-                results_plot, fig_pf_oos, stats_oos, best_params_from_run, position_size_oos = backtest_app.run_backtest_optimization(
+                # Unpack the updated return values
+                (
+                    fig_optimization_plot, best_params_from_run,
+                    fig_pf_is, stats_is, accurate_position_size_is,
+                    fig_pf_oos, stats_oos, accurate_position_size_oos
+                ) = backtest_app.run_backtest_optimization(
                     df_loaded, symbol,
                     cmo_range=cmo_range,
                     trix_range=trix_range,
@@ -346,9 +351,11 @@ if df_loaded is not None:
 
             # --- Display results ---
             # Rename the variable for clarity in display logic
-            best_params = best_params_from_run 
+            best_params = best_params_from_run
+
+            st.subheader("In-Sample 最適化結果") # Main title for IS Optimization
             if best_params:
-                st.subheader("In-Sample 最適化結果") # Changed title
+                # st.subheader("In-Sample 最適化結果") # Changed title
                 if optimization_mode == "シグナルパラメータ最適化":
                     st.write(f"**最適シグナルパラメータ (In-Sample):** CMO={best_params['cmo_period']}, Trix={best_params['trix_period']}")
                 elif optimization_mode == "取引量決定最適化":
@@ -364,68 +371,130 @@ if df_loaded is not None:
                          st.write("未実装アルゴリズムのパラメータ表示")
 
             # Display the appropriate plot (heatmap or 1D plot) from IS Optimization
-            if results_plot: # Renamed variable to handle both plot types
+            if fig_optimization_plot: # Renamed variable to handle both plot types
                 if optimization_mode == "シグナルパラメータ最適化" or sizing_algorithm == "ボラティリティ基準":
                     heatmap_title = "In-Sample シグナルパラメータ別リターン" if optimization_mode == "シグナルパラメータ最適化" else f"In-Sample 取引量パラメータ別リターン ({sizing_algorithm})"
                     st.subheader(heatmap_title) # Changed title
                 elif sizing_algorithm == "オシレータ基準":
                     st.subheader("In-Sample リターン vs オシレータスケール係数") # Changed title
                 # Display the plot using st.pyplot
-                st.pyplot(results_plot)
+                st.pyplot(fig_optimization_plot)
             else:
                  if best_params: # Only warn if params were found but plot failed
                      st.warning("In-Sample 最適化結果プロットを生成できませんでした。")
 
+            # --- Display In-Sample Backtest Results ---
+            st.subheader("In-Sample バックテスト結果 (最適パラメータ使用)")
+
+            if stats_is is not None:
+                st.write("**In-Sample バックテスト統計**") # Subtitle
+                stats_df_is = stats_is.to_frame(name='Value')
+                # Apply formatting (reuse OOS formatting logic - consider refactoring to a function later)
+                pct_indices = [
+                    'Total Return [%]', 'Benchmark Return [%]', 'Max Drawdown [%]',
+                    'Best Trade [%]', 'Worst Trade [%]', 'Avg Winning Trade [%]',
+                    'Avg Losing Trade [%]', 'Win Rate [%]'
+                ]
+                ratio_indices = [
+                    'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Omega Ratio',
+                    'Profit Factor', 'Beta', 'Alpha'
+                ]
+                for idx in stats_df_is.index:
+                    value = stats_df_is.loc[idx, 'Value']
+                    try:
+                        if isinstance(value, (int, float, np.number)):
+                            if idx in pct_indices:
+                                stats_df_is.loc[idx, 'Value'] = f"{value:.2f}%"
+                            elif idx in ratio_indices:
+                                stats_df_is.loc[idx, 'Value'] = f"{value:.3f}"
+                            elif 'Value' in idx or 'PnL' in idx or 'Paid' in idx:
+                                 stats_df_is.loc[idx, 'Value'] = f"{value:,.2f}"
+                        elif 'Date' in idx or 'Period' in idx or 'Duration' in idx:
+                             if isinstance(value, pd.Timestamp):
+                                 stats_df_is.loc[idx, 'Value'] = value.strftime('%Y-%m-%d')
+                             elif isinstance(value, pd.Timedelta):
+                                 stats_df_is.loc[idx, 'Value'] = str(value)
+                    except (TypeError, ValueError, AttributeError):
+                         pass
+                stats_df_is['Value'] = stats_df_is['Value'].astype(str)
+                st.dataframe(stats_df_is, height=400) # Slightly smaller height for IS stats
+            else:
+                if best_params: # Only show info if optimization succeeded but IS backtest failed/no trades
+                    st.info("In-Sample バックテスト統計を生成できませんでした。(トレードなし等)")
+
+            if fig_pf_is:
+                st.write("**In-Sample ポートフォリオ詳細**") # Subtitle
+                st.plotly_chart(fig_pf_is, use_container_width=True)
+            else:
+                if best_params and stats_is is not None: # Only warn if IS stats were generated but plot failed
+                    st.warning("In-Sample ポートフォリオプロットを生成できませんでした。")
+                elif best_params and stats_is is None:
+                    st.info("In-Sample ポートフォリオプロットは表示できません。(トレードなし等)")
+
+            if accurate_position_size_is is not None and not accurate_position_size_is.empty:
+                 if not (accurate_position_size_is == 0).all(): # Check if it's not just all zeros
+                     st.write("**In-Sample ポジションサイズ推移**") # Subtitle
+                     st.line_chart(accurate_position_size_is)
+                 else:
+                      if best_params: st.info("In-Sample ポジションサイズ推移はありません。(トレードなし等)")
+            else:
+                 if best_params: st.info("In-Sample ポジションサイズ推移は表示できません。")
+
+
+            # --- Display Out-of-Sample Backtest Results ---
+            st.subheader("Out-of-Sample バックテスト結果 (最適パラメータ使用)")
             # Display OOS results
             if stats_oos is not None:
-                st.subheader("Out-of-Sample バックテスト統計") # Changed title
-                stats_df = stats_oos.to_frame(name='Value')
-                
+                # st.subheader("Out-of-Sample バックテスト統計") # Changed title
+                st.write("**Out-of-Sample バックテスト統計**") # Subtitle
+                stats_df_oos = stats_oos.to_frame(name='Value') # Use a different variable name
+
                 # Define columns that represent percentages and should end with %
                 pct_indices = [
-                    'Total Return [%]', 'Benchmark Return [%]', 'Max Drawdown [%]', 
-                    'Best Trade [%]', 'Worst Trade [%]', 'Avg Winning Trade [%]', 
+                    'Total Return [%]', 'Benchmark Return [%]', 'Max Drawdown [%]',
+                    'Best Trade [%]', 'Worst Trade [%]', 'Avg Winning Trade [%]',
                     'Avg Losing Trade [%]', 'Win Rate [%]'
                 ]
                 # Define columns that are ratios/factors and need specific decimal places
                 ratio_indices = [
-                    'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Omega Ratio', 
-                    'Profit Factor', 'Beta', 'Alpha' 
+                    'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Omega Ratio',
+                    'Profit Factor', 'Beta', 'Alpha'
                 ]
                 
                 # Loop through index to apply specific formatting
-                for idx in stats_df.index:
-                    value = stats_df.loc[idx, 'Value']
+                for idx in stats_df_oos.index:
+                    value = stats_df_oos.loc[idx, 'Value']
                     try:
                         # Check if value is numeric before formatting
                         if isinstance(value, (int, float, np.number)):
                             if idx in pct_indices:
                                 # Format as float with 2 decimals and add %
-                                stats_df.loc[idx, 'Value'] = f"{value:.2f}%"
+                                stats_df_oos.loc[idx, 'Value'] = f"{value:.2f}%"
                             elif idx in ratio_indices:
                                 # Format as float with 3 decimals
-                                stats_df.loc[idx, 'Value'] = f"{value:.3f}"
+                                stats_df_oos.loc[idx, 'Value'] = f"{value:.3f}"
                             elif 'Value' in idx or 'PnL' in idx or 'Paid' in idx:
-                                 stats_df.loc[idx, 'Value'] = f"{value:,.2f}"
+                                 stats_df_oos.loc[idx, 'Value'] = f"{value:,.2f}"
                                  
                         elif 'Date' in idx or 'Period' in idx or 'Duration' in idx:
                              if isinstance(value, pd.Timestamp):
-                                 stats_df.loc[idx, 'Value'] = value.strftime('%Y-%m-%d')
+                                 stats_df_oos.loc[idx, 'Value'] = value.strftime('%Y-%m-%d')
                              elif isinstance(value, pd.Timedelta):
-                                 stats_df.loc[idx, 'Value'] = str(value)
+                                 stats_df_oos.loc[idx, 'Value'] = str(value)
                         
                     except (TypeError, ValueError, AttributeError) as fmt_err:
                          pass 
                 
-                stats_df['Value'] = stats_df['Value'].astype(str) 
-                st.dataframe(stats_df, height=600)
+                stats_df_oos['Value'] = stats_df_oos['Value'].astype(str)
+                st.dataframe(stats_df_oos, height=600)
             else:
                  # Warn only if IS optim was successful (best_params exists) but OOS failed
                  if best_params:
                      st.warning("Out-of-Sample バックテスト統計を生成できませんでした。検証期間にトレードが発生しなかった可能性があります。")
 
             if fig_pf_oos:
-                st.subheader("Out-of-Sample ポートフォリオ詳細") # Changed title
+                # st.subheader("Out-of-Sample ポートフォリオ詳細") # Changed title
+                st.write("**Out-of-Sample ポートフォリオ詳細**") # Subtitle
                 st.plotly_chart(fig_pf_oos, use_container_width=True)
             else:
                 # Warn only if IS optim was successful but OOS plot failed
@@ -433,10 +502,14 @@ if df_loaded is not None:
                     st.warning("Out-of-Sample ポートフォリオプロットを生成できませんでした。")
             
             # Add OOS Position Size Plot
-            if position_size_oos is not None and not position_size_oos.empty:
-                st.subheader("Out-of-Sample ポジションサイズ推移") # Changed title
-                st.line_chart(position_size_oos)
-                st.caption("ポジションサイズは Out-of-Sample 期間の取引履歴から計算されています。")
+            if accurate_position_size_oos is not None and not accurate_position_size_oos.empty:
+                 if not (accurate_position_size_oos == 0).all(): # Check if it's not just all zeros
+                    # st.subheader("Out-of-Sample ポジションサイズ推移") # Changed title
+                    st.write("**Out-of-Sample ポジションサイズ推移**") # Subtitle
+                    st.line_chart(accurate_position_size_oos)
+                    st.caption("ポジションサイズは Out-of-Sample 期間の取引履歴から計算されています。")
+                 else:
+                      if best_params: st.info("Out-of-Sample ポジションサイズ推移はありません。(トレードなし等)")
             else:
                 # Only show warning if OOS backtest ran successfully but position couldn't be plotted
                 if best_params and stats_oos is not None: # Check if OOS stats exist

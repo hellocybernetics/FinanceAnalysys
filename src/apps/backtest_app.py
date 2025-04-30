@@ -85,10 +85,10 @@ def run_backtest_optimization(
     # --- Initial Checks ---
     if df_input is None or df_input.empty:
         st.error("Input DataFrame is empty or None.")
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None, None
     if not 0.1 <= optimization_split_pct <= 0.9:
          st.error("最適化データ期間 (%) は 10% から 90% の間でなければなりません。")
-         return None, None, None, None, None
+         return None, None, None, None, None, None, None, None
 
     # --- Data Preparation ---
     # st.write("Preparing data for backtest...") # Less verbose
@@ -102,12 +102,12 @@ def run_backtest_optimization(
 
         if 'Close' not in df.columns:
              st.error("DataFrame must contain a 'Close' column.")
-             return None, None, None, None, None
+             return None, None, None, None, None, None, None, None
         # Ensure High, Low columns exist if needed for ATR
         if optimization_mode == "取引量決定最適化" and sizing_algorithm == "ボラティリティ基準":
              if 'High' not in df.columns or 'Low' not in df.columns:
                   st.error("ボラティリティ基準の取引量計算には 'High' と 'Low' 列が必要です。")
-                  return None, None, None, None, None
+                  return None, None, None, None, None, None, None, None
              df['High'] = df['High'].astype(np.float64)
              df['Low'] = df['Low'].astype(np.float64)
 
@@ -122,11 +122,11 @@ def run_backtest_optimization(
     except Exception as e:
         st.error(f"Error preparing data for backtest: {e}")
         st.error(traceback.format_exc())
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
     if df.empty:
         st.error("Data became empty after preparation for backtest.")
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None, None
     # --- End Data Preparation ---
 
     # --- In-Sample / Out-of-Sample Split ---
@@ -136,7 +136,7 @@ def run_backtest_optimization(
 
     if split_index < min_required_is_length or len(df) - split_index < min_required_oos_length:
         st.error(f"データが短すぎるか、分割割合 ({optimization_split_pct:.0%}) が不適切で、In-Sample (最低{min_required_is_length}期間) または Out-of-Sample (最低{min_required_oos_length}期間) を確保できません。")
-        return None, None, None, None, None # Or appropriate error return
+        return None, None, None, None, None, None, None, None # Or appropriate error return
 
     df_is = df.iloc[:split_index].copy() # Use copy to avoid SettingWithCopyWarning
     df_oos = df.iloc[split_index:].copy()
@@ -189,7 +189,7 @@ def run_backtest_optimization(
             progress_bar.empty()
             if np.isnan(total_returns_matrix).all():
                  st.warning("In-Sample シグナル最適化では有効なリターンが得られませんでした。")
-                 return None, None, None, None, None # Cannot proceed without params
+                 return None, None, None, None, None, None, None, None # Cannot proceed without params
             best_cmo_idx, best_trix_idx = np.unravel_index(np.nanargmax(total_returns_matrix), total_returns_matrix.shape)
             best_cmo_period = cmo_periods[best_cmo_idx]
             best_trix_period = trix_periods[best_trix_idx]
@@ -212,7 +212,7 @@ def run_backtest_optimization(
             st.error(f"Error during In-Sample signal parameter optimization loop: {e}")
             st.error(traceback.format_exc())
             if 'progress_bar' in locals(): progress_bar.empty()
-            return None, None, None, None, None
+            return None, None, None, None, None, None, None, None
         # --- End of Signal Parameter Optimization Logic (IS) ---
 
     elif optimization_mode == "取引量決定最適化":
@@ -237,7 +237,7 @@ def run_backtest_optimization(
 
         if not np.any(entries_is) and (not allow_shorting or not np.any(short_entries_is)):
             st.warning("In-Sample 期間でベースとなる売買シグナルが生成されませんでした。取引量最適化を実行できません。")
-            return None, None, None, None, None
+            return None, None, None, None, None, None, None, None
 
         # --- Sizing Algorithm Branching (using df_is) ---
         if sizing_algorithm == "ボラティリティ基準":
@@ -246,7 +246,7 @@ def run_backtest_optimization(
             # Validate ranges (Same as before)
             if atr_p_range is None or target_vol_range is None:
                  st.error("ATR期間範囲と目標ボラティリティ範囲が必要です。")
-                 return None, None, None, None, None
+                 return None, None, None, None, None, None, None, None
 
             atr_periods = np.arange(atr_p_range[0], atr_p_range[1] + 1)
             target_vols = np.linspace(target_vol_range[0] / 100.0, target_vol_range[1] / 100.0, 10)
@@ -315,7 +315,7 @@ def run_backtest_optimization(
                 progress_bar.empty()
                 if np.isnan(total_returns_matrix).all():
                      st.warning("In-Sample 取引量最適化（ボラティリティ基準）では有効なリターンが得られませんでした。")
-                     return None, None, None, None, None
+                     return None, None, None, None, None, None, None, None
 
                 best_atr_idx, best_vol_idx = np.unravel_index(np.nanargmax(total_returns_matrix), total_returns_matrix.shape)
                 best_atr_period = atr_periods[best_atr_idx]
@@ -339,7 +339,7 @@ def run_backtest_optimization(
                 st.error(f"Error during In-Sample volatility sizing optimization loop: {e}")
                 st.error(traceback.format_exc())
                 if 'progress_bar' in locals(): progress_bar.empty()
-                return None, None, None, None, None
+                return None, None, None, None, None, None, None, None
             # --- End of Volatility Sizing Logic (IS) ---
 
         elif sizing_algorithm == "オシレータ基準":
@@ -347,7 +347,7 @@ def run_backtest_optimization(
 
             if osc_scale_range is None:
                  st.error("オシレータスケール係数範囲が必要です。")
-                 return None, None, None, None, None
+                 return None, None, None, None, None, None, None, None
 
             # Calculate CMO values on df_is
             cmo_values_is = chande_momentum_oscillator(df_is['Close'], period=fixed_cmo_p)
@@ -416,7 +416,7 @@ def run_backtest_optimization(
                 returns_array = np.array(returns_list)
                 if np.isnan(returns_array).all():
                      st.warning("In-Sample オシレータ基準最適化では有効なリターンが得られませんでした。")
-                     return None, None, None, None, None
+                     return None, None, None, None, None, None, None, None
 
                 best_idx = np.nanargmax(returns_array)
                 best_osc_scale_factor = osc_scale_factors[best_idx]
@@ -439,38 +439,94 @@ def run_backtest_optimization(
                 st.error(f"Error during In-Sample oscillator sizing optimization loop: {e}")
                 st.error(traceback.format_exc())
                 if 'progress_bar' in locals(): progress_bar.empty()
-                return None, None, None, None, None
+                return None, None, None, None, None, None, None, None
             # --- End of Oscillator Sizing Logic (IS) ---
 
         elif sizing_algorithm == "ボリンジャーバンド幅基準":
             st.warning(f"取引量決定アルゴリズム「{sizing_algorithm}」は未実装です。")
-            return None, None, None, None, None
+            return None, None, None, None, None, None, None, None
 
         elif sizing_algorithm == "資金管理基準 (固定リスク率)":
              st.warning(f"取引量決定アルゴリズム「{sizing_algorithm}」は未実装です。")
-             return None, None, None, None, None
+             return None, None, None, None, None, None, None, None
 
         else:
             st.warning(f"取引量決定アルゴリズム「{sizing_algorithm}」は未実装です。")
-            return None, None, None, None, None
+            return None, None, None, None, None, None, None, None
         # --- End of Sizing Algorithm Branching (IS) ---
     # --- End of Trading Volume Optimization Logic (IS) ---
 
     else:
         st.error(f"未定義の最適化モードです: {optimization_mode}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None, None
     # ==========================================================================
     # --- Check if Optimization was Successful ---
     # ==========================================================================
     if best_params is None:
          st.error("In-Sample 最適化で有効なパラメータが見つかりませんでした。Out-of-Sample 検証に進めません。")
          # Return only the IS optimization plot if it exists
-         return fig_optimization_plot, None, None, None, None
+         # Updated Return structure:
+         # fig_optimization_plot, best_params, fig_pf_is, stats_is, accurate_position_size_is,
+         # fig_pf_oos, stats_oos, accurate_position_size_oos
+         return fig_optimization_plot, None, None, None, None, None, None, None
 
-    if best_pf_is is None:
+    stats_is = None
+    fig_pf_is = None
+    accurate_position_size_is = None
+    if best_pf_is is not None:
+        if best_pf_is.trades.count() > 0:
+            try:
+                stats_is = best_pf_is.stats()
+            except Exception as stats_err_is:
+                st.warning(f"In-Sample 統計の計算中にエラー: {stats_err_is}")
+                stats_is = None
+            try:
+                fig_pf_is = best_pf_is.plot(subplots=['orders', 'trade_pnl', 'cum_returns'])
+            except Exception as plot_err_is:
+                 st.warning(f"In-Sample ポートフォリオプロットの生成中にエラー: {plot_err_is}")
+                 fig_pf_is = None
+
+            # Calculate Accurate Position Size for IS
+            accurate_position_size_is = pd.Series(0.0, index=df_is.index)
+            try:
+                records_df_is = best_pf_is.trades.records
+                entry_indices_is = df_is.index[records_df_is['entry_idx'].astype(int)]
+                exit_indices_is = df_is.index[records_df_is['exit_idx'].astype(int)]
+                entry_adj_size_is = records_df_is['size'] * np.where(records_df_is['direction'] == 0, 1, -1)
+                entry_changes_is = pd.Series(entry_adj_size_is.values, index=entry_indices_is)
+
+                closed_trades_is = records_df_is[records_df_is['status'] == 1]
+                if not closed_trades_is.empty:
+                    closed_exit_indices_is = df_is.index[closed_trades_is['exit_idx'].astype(int)]
+                    exit_adj_size_closed_is = -closed_trades_is['size'].reindex(closed_exit_indices_is.unique()).fillna(0) * np.where(closed_trades_is['direction'].reindex(closed_exit_indices_is.unique()).fillna(0) == 0, 1, -1)
+                    exit_changes_is = pd.Series(exit_adj_size_closed_is.values, index=closed_exit_indices_is)
+                else:
+                    exit_changes_is = pd.Series(dtype=float)
+
+                all_changes_is = pd.concat([entry_changes_is, exit_changes_is])
+                if not all_changes_is.empty:
+                     net_changes_is = all_changes_is.groupby(all_changes_is.index).sum()
+                     aligned_changes_is, _ = net_changes_is.align(accurate_position_size_is, fill_value=0.0)
+                     accurate_position_size_is = aligned_changes_is.cumsum()
+                else:
+                     accurate_position_size_is = pd.Series(0.0, index=df_is.index)
+
+            except Exception as calc_err_is:
+                st.warning(f"In-Sample ポジションサイズの計算中にエラー: {calc_err_is}")
+                accurate_position_size_is = None
+        else:
+            st.info("In-Sample 最適化期間中にトレードは実行されませんでした。")
+            # Ensure IS results are None if no trades
+            stats_is = None
+            fig_pf_is = None
+            accurate_position_size_is = pd.Series(0.0, index=df_is.index) # Return empty series for consistency
+
+    else: # best_pf_is is None (but best_params exists)
          st.warning("In-Sample 最適化で最良ポートフォリオが見つかりませんでした。")
-         # We have best_params, but no best_pf_is. Can still proceed to OOS validation.
-         # Might indicate the best params resulted in no trades in IS.
+         # Set IS results to None
+         stats_is = None
+         fig_pf_is = None
+         accurate_position_size_is = None
 
     # ==========================================================================
     # --- Out-of-Sample Validation ---
@@ -555,7 +611,10 @@ def run_backtest_optimization(
         if not np.any(entries_oos) and (not allow_shorting or not np.any(short_entries_oos)):
             st.warning("Out-of-Sample 期間で有効なエントリーシグナルが生成されませんでした。")
             # Still return IS results, but OOS results will be None
-            return fig_optimization_plot, None, None, best_params, None
+            # Updated Return structure:
+            # fig_optimization_plot, best_params, fig_pf_is, stats_is, accurate_position_size_is,
+            # fig_pf_oos, stats_oos, accurate_position_size_oos
+            return fig_optimization_plot, best_params, fig_pf_is, stats_is, accurate_position_size_is, None, None, None
 
         # 3. Run Portfolio Simulation for OOS
         portfolio_kwargs_oos = {
@@ -625,13 +684,25 @@ def run_backtest_optimization(
                  st.warning(f"Out-of-Sample ポートフォリオプロットを生成できませんでした: {plot_err_oos}")
                  fig_pf_oos = None
         else:
-            fig_pf_oos = None # No plot if no trades
+            fig_pf_oos = None
 
     except Exception as oos_err:
          st.error(f"Error during Out-of-Sample validation: {oos_err}")
          st.error(traceback.format_exc())
          # Return IS results, OOS results will be None
-         return fig_optimization_plot, None, None, best_params, None
+         # Updated Return structure:
+         # fig_optimization_plot, best_params, fig_pf_is, stats_is, accurate_position_size_is,
+         # fig_pf_oos, stats_oos, accurate_position_size_oos
+         return fig_optimization_plot, best_params, fig_pf_is, stats_is, accurate_position_size_is, fig_pf_oos, stats_oos, accurate_position_size_oos
 
     # --- Final Return ---
-    return fig_optimization_plot, fig_pf_oos, stats_oos, best_params, accurate_position_size_oos 
+    # Updated Return structure:
+    # 1. fig_optimization_plot (IS optim plot: heatmap or 1D)
+    # 2. best_params (IS optim best params)
+    # 3. fig_pf_is (IS portfolio plot)
+    # 4. stats_is (IS stats)
+    # 5. accurate_position_size_is (IS position size)
+    # 6. fig_pf_oos (OOS portfolio plot)
+    # 7. stats_oos (OOS stats)
+    # 8. accurate_position_size_oos (OOS position size)
+    return fig_optimization_plot, best_params, fig_pf_is, stats_is, accurate_position_size_is, fig_pf_oos, stats_oos, accurate_position_size_oos 
