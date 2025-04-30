@@ -275,6 +275,19 @@ if df_loaded is not None:
                 key="tsl_pct"
             ) / 100.0 # Convert percentage to decimal
 
+        # Add optimization split slider
+        st.sidebar.subheader("最適化と検証")
+        optimization_split_pct_ui = st.sidebar.slider(
+            "最適化データ期間 (%)",
+            min_value=10,
+            max_value=90,
+            value=70,
+            step=5,
+            key="optimization_split_pct",
+            help="バックテストデータ全体のうち、パラメータ最適化に使用する最初の期間の割合。残りの期間は検証に使用されます。"
+        )
+        optimization_split_pct = optimization_split_pct_ui / 100.0 # Convert to decimal for function call
+
         # --- Backtest Execution ---
         if st.button("バックテスト実行"):
             # Update spinner message for oscillator mode
@@ -300,9 +313,9 @@ if df_loaded is not None:
                          st.info(f"保存された最適シグナルパラメータを使用: CMO={fixed_signal_params_to_pass.get('cmo_period', 'N/A')}, Trix={fixed_signal_params_to_pass.get('trix_period', 'N/A')}", icon="ℹ️")
                         
                 # Call the backtest function
-                results_plot, fig_pf, stats, best_params_from_run, position_size = backtest_app.run_backtest_optimization(
+                results_plot, fig_pf_oos, stats_oos, best_params_from_run, position_size_oos = backtest_app.run_backtest_optimization(
                     df_loaded, symbol,
-                    cmo_range=cmo_range, 
+                    cmo_range=cmo_range,
                     trix_range=trix_range,
                     atr_p_range=atr_p_range,
                     target_vol_range=target_vol_range,
@@ -315,7 +328,8 @@ if df_loaded is not None:
                     tsl_pct=tsl_pct_input,
                     optimization_mode=optimization_mode,
                     sizing_algorithm=sizing_algorithm,
-                    fixed_signal_params=fixed_signal_params_to_pass # Pass retrieved or None params
+                    fixed_signal_params=fixed_signal_params_to_pass, # Pass retrieved or None params
+                    optimization_split_pct=optimization_split_pct # Pass the split percentage
                 )
             
             # Store best signal params in session state IF signal optim was successful
@@ -334,11 +348,11 @@ if df_loaded is not None:
             # Rename the variable for clarity in display logic
             best_params = best_params_from_run 
             if best_params:
-                st.subheader("最適化結果")
+                st.subheader("In-Sample 最適化結果") # Changed title
                 if optimization_mode == "シグナルパラメータ最適化":
-                    st.write(f"**最適シグナルパラメータ:** CMO={best_params['cmo_period']}, Trix={best_params['trix_period']}")
+                    st.write(f"**最適シグナルパラメータ (In-Sample):** CMO={best_params['cmo_period']}, Trix={best_params['trix_period']}")
                 elif optimization_mode == "取引量決定最適化":
-                    st.write(f"**最適取引量パラメータ ({sizing_algorithm}):**")
+                    st.write(f"**最適取引量パラメータ (In-Sample, {sizing_algorithm}):**") # Changed title
                     if sizing_algorithm == "ボラティリティ基準":
                         st.write(f"  ATR Period = {best_params.get('atr_period', 'N/A')}")
                         st.write(f"  Target Volatility = {best_params.get('target_vol_pct', 'N/A'):.2f}%")
@@ -349,22 +363,23 @@ if df_loaded is not None:
                     else:
                          st.write("未実装アルゴリズムのパラメータ表示")
 
-            # Display the appropriate plot (heatmap or 1D plot)
+            # Display the appropriate plot (heatmap or 1D plot) from IS Optimization
             if results_plot: # Renamed variable to handle both plot types
                 if optimization_mode == "シグナルパラメータ最適化" or sizing_algorithm == "ボラティリティ基準":
-                    heatmap_title = "シグナルパラメータ別リターン (ヒートマップ)" if optimization_mode == "シグナルパラメータ最適化" else f"取引量パラメータ別リターン ({sizing_algorithm} - ヒートマップ)"
-                    st.subheader(heatmap_title)
+                    heatmap_title = "In-Sample シグナルパラメータ別リターン" if optimization_mode == "シグナルパラメータ最適化" else f"In-Sample 取引量パラメータ別リターン ({sizing_algorithm})"
+                    st.subheader(heatmap_title) # Changed title
                 elif sizing_algorithm == "オシレータ基準":
-                    st.subheader("リターン vs オシレータスケール係数")
+                    st.subheader("In-Sample リターン vs オシレータスケール係数") # Changed title
                 # Display the plot using st.pyplot
                 st.pyplot(results_plot)
             else:
-                 if best_params:
-                     st.warning("結果プロットを生成できませんでした。")
+                 if best_params: # Only warn if params were found but plot failed
+                     st.warning("In-Sample 最適化結果プロットを生成できませんでした。")
 
-            if stats is not None:
-                st.subheader("最適パラメータでのバックテスト統計")
-                stats_df = stats.to_frame(name='Value')
+            # Display OOS results
+            if stats_oos is not None:
+                st.subheader("Out-of-Sample バックテスト統計") # Changed title
+                stats_df = stats_oos.to_frame(name='Value')
                 
                 # Define columns that represent percentages and should end with %
                 pct_indices = [
@@ -405,25 +420,27 @@ if df_loaded is not None:
                 stats_df['Value'] = stats_df['Value'].astype(str) 
                 st.dataframe(stats_df, height=600)
             else:
+                 # Warn only if IS optim was successful (best_params exists) but OOS failed
                  if best_params:
-                     st.warning("バックテスト統計を生成できませんでした。")
+                     st.warning("Out-of-Sample バックテスト統計を生成できませんでした。検証期間にトレードが発生しなかった可能性があります。")
 
-            if fig_pf:
-                st.subheader("最適パラメータでのポートフォリオ詳細")
-                st.plotly_chart(fig_pf, use_container_width=True)
+            if fig_pf_oos:
+                st.subheader("Out-of-Sample ポートフォリオ詳細") # Changed title
+                st.plotly_chart(fig_pf_oos, use_container_width=True)
             else:
+                # Warn only if IS optim was successful but OOS plot failed
                 if best_params:
-                    st.warning("ポートフォリオプロットを生成できませんでした。")
+                    st.warning("Out-of-Sample ポートフォリオプロットを生成できませんでした。")
             
-            # Add Position Size Plot
-            if position_size is not None and not position_size.empty:
-                st.subheader("正確なポジションサイズ推移")
-                st.line_chart(position_size)
-                st.caption("ポジションサイズは取引履歴 (trades.records) から正確に計算されています。")
+            # Add OOS Position Size Plot
+            if position_size_oos is not None and not position_size_oos.empty:
+                st.subheader("Out-of-Sample ポジションサイズ推移") # Changed title
+                st.line_chart(position_size_oos)
+                st.caption("ポジションサイズは Out-of-Sample 期間の取引履歴から計算されています。")
             else:
-                # Only show warning if backtest ran successfully but position couldn't be plotted
-                if best_params:
-                    st.info("ポジションサイズの推移は表示できませんでした。")
+                # Only show warning if OOS backtest ran successfully but position couldn't be plotted
+                if best_params and stats_oos is not None: # Check if OOS stats exist
+                    st.info("Out-of-Sample ポジションサイズの推移は表示できませんでした。（トレードなし、または計算エラー）")
 
         else:
             st.info("サイドバーでパラメータを設定し、「バックテスト実行」ボタンを押してください。")
