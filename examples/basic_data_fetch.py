@@ -18,6 +18,12 @@ from src.visualization.simple_plot import simple_technical_plot, simple_price_pl
 from src.social.twitter.create_tweet import create_tweet_text
 from src.analysis.technical.calc_technical import calculate_technical_indicators
 
+# Add project root to Python path
+# プロジェクトルート（srcディレクトリの親）をsys.pathに追加
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
+
 # ロギングの設定
 logging.basicConfig(
     level=logging.INFO,

@@ -13,8 +13,11 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX # Import SARIMAX
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf # Import ACF/PACF plots
 # import pmdarima as pm # Removed pmdarima import
 
-# Add src directory to Python path
-sys.path.append(str(Path(__file__).resolve().parent))
+# Add project root to Python path
+# プロジェクトルート（srcディレクトリの親）をsys.pathに追加
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 from src.core.data.yahoo.fetch_from_yahoo import fetch_stock_data
 from src.ml_analysis.preprocessing import clean_data # Keep initial cleaning

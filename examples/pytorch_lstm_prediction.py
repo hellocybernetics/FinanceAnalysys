@@ -12,8 +12,11 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from tqdm import tqdm # For progress bar during training/prediction
 
-# Add src directory to Python path
-sys.path.append(str(Path(__file__).resolve().parent))
+# Add project root to Python path
+# プロジェクトルート（srcディレクトリの親）をsys.pathに追加
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 from src.core.data.yahoo.fetch_from_yahoo import fetch_stock_data
 from src.ml_analysis.preprocessing import clean_data
