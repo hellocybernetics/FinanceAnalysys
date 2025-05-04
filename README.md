@@ -68,31 +68,16 @@
 
 ```
 FinanceAnalysisPy/
+├── config/                 # 設定ファイル (例: analysis_config.yaml)
+├── credentials/            # 認証情報 (例: twitter_config.json)
+├── lib/                    # 外部ライブラリ (ta-lib)
+├── output/                 # データ保存、分析結果
+├── projects/               # バックテスト/トレードのDockerプロジェクト
+├── scripts/                # 実行スクリプト (例: run_analysis.py)
 ├── src/                    # ソースコード
-│   ├── core/              # コア機能
-│   │   ├── data/         # データ取得・管理
-│   │   └── utils/        # ユーティリティ関数
-│   ├── analysis/         # 分析機能
-│   │   ├── technical/    # テクニカル分析
-│   │   └── fundamental/  # ファンダメンタル分析
-│   ├── visualization/    # 可視化機能
-│   └── social/          # SNS連携
-│       └── twitter/     # Twitter API連携
-├── config/               # 設定ファイル
-│   └── analysis_config.yaml  # 分析設定
-├── scripts/              # 実行スクリプト
-│   └── run_analysis.py   # 分析実行スクリプト
-├── credentials/          # 認証情報
-│   └── twitter_config.json
-├── data/                # データ保存
-├── result/             # 分析結果
-├── examples/           # 使用例
-├── projects/           # バックテスト/トレードのDockerプロジェクト
-├── lib/               # 外部ライブラリ
-├── basic_data_fetch.py  # メインスクリプト
-├── pyproject.toml      # プロジェクト設定
-├── requirements.txt    # 依存関係
-└── README.md          # ドキュメント
+├── pyproject.toml          # プロジェクト設定 (uv/Poetry)
+├── README.md               # このファイル
+└── requirements.txt        # 依存関係 (pip)
 ```
 
 ### 新規追加ファイル

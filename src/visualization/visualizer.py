@@ -13,6 +13,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Define indicator categories
+OVERLAY_INDICATORS = {'SMA', 'EMA', 'BBands'}
+SUBPLOT_INDICATORS = {'RSI', 'MACD', 'Stochastic', 'ADX', 'WILLR'}
+
 class Visualizer:
     """
     Class for visualizing financial data and technical indicators.
@@ -30,6 +34,17 @@ class Visualizer:
         self.style = style
         self.figsize = figsize
         self.dpi = dpi
+        
+        self.plot_dispatch = {
+            'SMA': self._plot_sma,
+            'EMA': self._plot_ema,
+            'BBands': self._plot_bbands,
+            'RSI': self._plot_rsi,
+            'MACD': self._plot_macd,
+            'Stochastic': self._plot_stochastic,
+            'ADX': self._plot_adx,
+            'WILLR': self._plot_willr,
+        }
         
         sns.set_theme()
         
@@ -55,148 +70,134 @@ class Visualizer:
         Returns:
             str: Path to the saved image file, or None if not saved.
         """
-        fig, ax1 = plt.subplots(figsize=self.figsize)
+        # Filter indicators that should be plotted
+        indicators_to_plot = [ind for ind in indicators if ind.get('plot', True)]
+        if not indicators_to_plot and 'Close' not in df.columns:
+             logger.warning(f"No indicators to plot and no 'Close' column for {symbol}. Skipping plot.")
+             return None
+
+        # Categorize indicators
+        overlay_inds = [ind for ind in indicators_to_plot if ind['name'] in OVERLAY_INDICATORS]
+        subplot_inds = [ind for ind in indicators_to_plot if ind['name'] in SUBPLOT_INDICATORS]
+        num_subplots = len(subplot_inds)
+
+        # --- Create Figure and Axes --- 
+        fig = None
+        ax1 = None
+        subplot_axes = []
+
+        if num_subplots == 0:
+            fig, ax1 = plt.subplots(figsize=self.figsize)
+        else:
+            # Adjust figure height based on number of subplots
+            fig_height = self.figsize[1] * (1 + 0.5 * num_subplots)
+            fig = plt.figure(figsize=(self.figsize[0], fig_height))
+            
+            # Define height ratios (give more space to price plot)
+            height_ratios = [3] + [1] * num_subplots 
+            gs = fig.add_gridspec(num_subplots + 1, 1, height_ratios=height_ratios)
+            
+            # Create price axes and subplot axes list
+            ax1 = fig.add_subplot(gs[0])
+            subplot_axes = [fig.add_subplot(gs[i+1], sharex=ax1) for i in range(num_subplots)]
+            
+            # Hide x-axis labels for all but the bottom subplot
+            all_axes = [ax1] + subplot_axes
+            for ax in all_axes[:-1]:
+                plt.setp(ax.get_xticklabels(), visible=False)
         
-        ax1.plot(df.index, df['Close'], label='Close Price', color='black', linewidth=1.5)
-        ax1.set_xlabel('Date')
+        # --- Plot Price Data --- 
+        if 'Close' in df.columns:
+             ax1.plot(df.index, df['Close'], label='Close Price', color='black', linewidth=1.5)
+        else:
+             logger.warning(f"'Close' column not found for {symbol}. Cannot plot price.")
+
         ax1.set_ylabel('Price')
-        ax1.grid(True, alpha=0.3)
+
+        # --- Plot Overlay Indicators --- 
+        for ind in overlay_inds:
+            plot_func = self.plot_dispatch.get(ind['name'])
+            if plot_func:
+                try:
+                    plot_func(ax1, df, ind.get('params', {}))
+                except Exception as e:
+                    logger.error(f"Error plotting overlay indicator {ind['name']}: {e}")
+            else:
+                 logger.warning(f"Plotting function for overlay indicator {ind['name']} not found.")
+
+
+        # --- Plot Subplot Indicators --- 
+        for ind, ax in zip(subplot_inds, subplot_axes):
+            plot_func = self.plot_dispatch.get(ind['name'])
+            if plot_func:
+                try:
+                    plot_func(ax, df, ind.get('params', {}))
+                except Exception as e:
+                    logger.error(f"Error plotting subplot indicator {ind['name']}: {e}")
+            else:
+                 logger.warning(f"Plotting function for subplot indicator {ind['name']} not found.")
+
+        # --- Final Touches --- 
+        all_axes = [ax1] + subplot_axes
+        for ax in all_axes:
+            ax.grid(True, alpha=0.3) # Add legend to each axes
+            # Set date formatter for x-axis (only needed for the last one if shared)
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            
+            # Move Y-axis ticks and label to the right
+            ax.yaxis.tick_right()
+            ax.yaxis.set_label_position("right")
+            
+            # Get existing handles and labels for legend
+            handles, labels = ax.get_legend_handles_labels()
+            # Filter out potential duplicate labels (like ADX threshold) before creating legend
+            unique_labels = {}
+            for handle, label in zip(handles, labels):
+                if label not in unique_labels:
+                    unique_labels[label] = handle
+            ax.legend(unique_labels.values(), unique_labels.keys(), loc='upper left') 
+
+        # Set x-label only on the bottom-most axis
+        all_axes[-1].set_xlabel('Date')
+        plt.xticks(rotation=45, ha='right') # Apply rotation to the last axes' ticks
         
-        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        plt.xticks(rotation=45)
-        
-        for indicator in indicators:
-            name = indicator['name']
-            params = indicator.get('params', {})
-            plot = indicator.get('plot', True)
-            
-            if not plot:
-                continue
-            
-            if name == 'SMA':
-                length = params.get('length', 20)
-                col_name = f'SMA_{length}'
-                if col_name in df.columns:
-                    ax1.plot(df.index, df[col_name], label=f'SMA ({length})', linewidth=1)
-            
-            elif name == 'EMA':
-                length = params.get('length', 50)
-                col_name = f'EMA_{length}'
-                if col_name in df.columns:
-                    ax1.plot(df.index, df[col_name], label=f'EMA ({length})', linewidth=1)
-            
-            elif name == 'BBands':
-                length = params.get('length', 20)
-                std = params.get('std', 2)
-                upper_col = f'BBU_{length}_{std}'
-                middle_col = f'BBM_{length}_{std}'
-                lower_col = f'BBL_{length}_{std}'
-                
-                if all(col in df.columns for col in [upper_col, middle_col, lower_col]):
-                    ax1.plot(df.index, df[upper_col], 'r--', label=f'Upper BB ({length}, {std})', alpha=0.7)
-                    ax1.plot(df.index, df[middle_col], 'g--', label=f'Middle BB ({length})', alpha=0.7)
-                    ax1.plot(df.index, df[lower_col], 'r--', label=f'Lower BB ({length}, {std})', alpha=0.7)
-                    ax1.fill_between(df.index, df[upper_col], df[lower_col], alpha=0.1, color='gray')
-        
-        oscillator_indicators = ['RSI', 'MACD', 'Stochastic']
-        has_oscillators = any(ind['name'] in oscillator_indicators for ind in indicators if ind.get('plot', True))
-        
-        if has_oscillators:
-            fig.set_size_inches(self.figsize[0], self.figsize[1] * 1.5)  # Make the figure taller
-            
-            gs = fig.add_gridspec(3, 1, height_ratios=[2, 1, 1])
-            
-            ax1.set_position(gs[0].get_position(fig))
-            ax1.set_subplotspec(gs[0])
-            
-            ax2 = fig.add_subplot(gs[1])  # RSI
-            ax3 = fig.add_subplot(gs[2])  # MACD
-            
-            oscillator_count = 0
-            
-            for indicator in indicators:
-                name = indicator['name']
-                params = indicator.get('params', {})
-                plot = indicator.get('plot', True)
-                
-                if not plot:
-                    continue
-                
-                if name == 'RSI':
-                    length = params.get('length', 14)
-                    col_name = f'RSI_{length}'
-                    
-                    if col_name in df.columns:
-                        ax2.plot(df.index, df[col_name], label=f'RSI ({length})', color='purple')
-                        ax2.axhline(y=70, color='r', linestyle='--', alpha=0.5)
-                        ax2.axhline(y=30, color='g', linestyle='--', alpha=0.5)
-                        ax2.fill_between(df.index, df[col_name], 70, where=(df[col_name] >= 70), color='r', alpha=0.3)
-                        ax2.fill_between(df.index, df[col_name], 30, where=(df[col_name] <= 30), color='g', alpha=0.3)
-                        ax2.set_ylabel('RSI')
-                        ax2.set_ylim(0, 100)
-                        ax2.grid(True, alpha=0.3)
-                        oscillator_count += 1
-                
-                elif name == 'MACD':
-                    fast = params.get('fast', 12)
-                    slow = params.get('slow', 26)
-                    signal = params.get('signal', 9)
-                    
-                    macd_col = f'MACD_{fast}_{slow}'
-                    signal_col = f'MACD_Signal_{signal}'
-                    hist_col = f'MACD_Hist_{fast}_{slow}_{signal}'
-                    
-                    if all(col in df.columns for col in [macd_col, signal_col, hist_col]):
-                        ax3.plot(df.index, df[macd_col], label=f'MACD ({fast}, {slow})', color='blue')
-                        ax3.plot(df.index, df[signal_col], label=f'Signal ({signal})', color='red')
-                        
-                        for i in range(len(df) - 1):
-                            if df[hist_col].iloc[i] >= 0:
-                                ax3.bar(df.index[i], df[hist_col].iloc[i], color='g', alpha=0.5, width=0.7)
-                            else:
-                                ax3.bar(df.index[i], df[hist_col].iloc[i], color='r', alpha=0.5, width=0.7)
-                        
-                        ax3.set_ylabel('MACD')
-                        ax3.grid(True, alpha=0.3)
-                        oscillator_count += 1
-            
-            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-            ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-            plt.xticks(rotation=45)
-            
-            ax1.legend(loc='upper left')
-            ax2.legend(loc='upper left')
-            ax3.legend(loc='upper left')
-        else:
-            ax1.legend(loc='best')
-        
+        # Set Title
         if company_name and company_name != symbol:
-            title = f'{symbol} - {company_name} - Technical Indicators'
+            title = f'{symbol} - {company_name} - Technical Analysis'
         else:
-            title = f'{symbol} - Technical Indicators'
-            
+            title = f'{symbol} - Technical Analysis'
         plt.suptitle(title, fontsize=16)
-        plt.tight_layout()
         
+        # Improve layout
+        plt.tight_layout(rect=[0, 0.03, 1, 0.97]) # Adjust rect to prevent title overlap
+
+        # --- Save / Show --- 
+        filepath = None
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            clean_symbol = symbol.replace('/', '-').replace('^', '')
+            clean_symbol = symbol.replace('/', '-').replace('^', '') # Clean symbol for filename
             filename = f"{clean_symbol}_analysis_{timestamp}.png"
             filepath = os.path.join(output_dir, filename)
-            plt.savefig(filepath, dpi=self.dpi, bbox_inches='tight')
-            logger.info(f"Saved plot for {symbol} to {filepath}")
-            
-            if not show_plots:
+            try:
+                plt.savefig(filepath, dpi=self.dpi, bbox_inches='tight')
+                logger.info(f"Saved plot for {symbol} to {filepath}")
+            except Exception as e:
+                 logger.error(f"Failed to save plot to {filepath}: {e}")
+                 filepath = None # Ensure filepath is None if save fails
+
+            if not show_plots: # Close figure only if saving and not showing
                 plt.close(fig)
-                return filepath
-        
+                # return filepath # Return inside if block ? No, return outside
+
         if show_plots:
             plt.show()
-        else:
-            plt.close(fig)
-        
-        return filepath if output_dir else None
+        elif not output_dir: # Close if not saving and not showing
+             plt.close(fig)
+        elif output_dir and not show_plots: # Already closed if saved and not showing
+            pass # Figure is already closed
+             
+        return filepath
         
     def create_failed_symbols_report(self, failed_symbols, output_dir):
         """
@@ -225,3 +226,98 @@ class Visualizer:
         
         logger.info(f"Saved failed symbols report to {filepath}")
         return filepath
+
+    # --- Private Plotting Methods --- 
+
+    def _plot_sma(self, ax, df, params):
+        length = params.get('length', 20)
+        col_name = f'SMA_{length}'
+        if col_name in df.columns:
+            ax.plot(df.index, df[col_name], label=f'SMA ({length})', linewidth=1)
+
+    def _plot_ema(self, ax, df, params):
+        length = params.get('length', 50)
+        col_name = f'EMA_{length}'
+        if col_name in df.columns:
+            ax.plot(df.index, df[col_name], label=f'EMA ({length})', linewidth=1)
+
+    def _plot_bbands(self, ax, df, params):
+        length = params.get('length', 20)
+        std = params.get('std', 2)
+        upper_col = f'BBU_{length}_{std}'
+        middle_col = f'BBM_{length}_{std}'
+        lower_col = f'BBL_{length}_{std}'
+        if all(col in df.columns for col in [upper_col, middle_col, lower_col]):
+            ax.plot(df.index, df[upper_col], 'r--', label=f'Upper BB ({length}, {std})', alpha=0.7, linewidth=1)
+            ax.plot(df.index, df[middle_col], 'g--', label=f'Middle BB ({length})', alpha=0.7, linewidth=1)
+            ax.plot(df.index, df[lower_col], 'r--', label=f'Lower BB ({length}, {std})', alpha=0.7, linewidth=1)
+            ax.fill_between(df.index, df[upper_col], df[lower_col], alpha=0.1, color='gray')
+
+    def _plot_rsi(self, ax, df, params):
+        length = params.get('length', 14)
+        col_name = f'RSI_{length}'
+        if col_name in df.columns:
+            ax.plot(df.index, df[col_name], label=f'RSI ({length})', color='purple', linewidth=1)
+            ax.axhline(y=70, color='r', linestyle='--', alpha=0.5)
+            ax.axhline(y=30, color='g', linestyle='--', alpha=0.5)
+            ax.fill_between(df.index, df[col_name], 70, where=(df[col_name] >= 70), interpolate=True, color='r', alpha=0.3)
+            ax.fill_between(df.index, df[col_name], 30, where=(df[col_name] <= 30), interpolate=True, color='g', alpha=0.3)
+            ax.set_ylabel('RSI')
+            ax.set_ylim(0, 100)
+
+    def _plot_macd(self, ax, df, params):
+        fast = params.get('fast', 12)
+        slow = params.get('slow', 26)
+        signal = params.get('signal', 9)
+        macd_col = f'MACD_{fast}_{slow}'
+        signal_col = f'MACD_Signal_{signal}'
+        hist_col = f'MACD_Hist_{fast}_{slow}_{signal}'
+        if all(col in df.columns for col in [macd_col, signal_col, hist_col]):
+            ax.plot(df.index, df[macd_col], label=f'MACD ({fast}, {slow})', color='blue', linewidth=1)
+            ax.plot(df.index, df[signal_col], label=f'Signal ({signal})', color='red', linewidth=1)
+            # Plot histogram using bars
+            colors = np.where(df[hist_col] >= 0, 'g', 'r')
+            ax.bar(df.index, df[hist_col], label=f'Hist ({fast},{slow},{signal})', color=colors, alpha=0.5, width=0.7)
+            ax.axhline(0, color='grey', linestyle='--', linewidth=0.8)
+            ax.set_ylabel('MACD')
+            # Remove bar label from legend if lines are present
+            handles, labels = ax.get_legend_handles_labels()
+            ax.legend([h for h, l in zip(handles, labels) if 'Hist' not in l], 
+                      [l for l in labels if 'Hist' not in l])
+
+
+    def _plot_stochastic(self, ax, df, params):
+        k = params.get('k', 14)
+        d = params.get('d', 3)
+        k_col = f'STOCHk_{k}_{d}'
+        d_col = f'STOCHd_{k}_{d}'
+        if all(col in df.columns for col in [k_col, d_col]):
+            ax.plot(df.index, df[k_col], label=f'%K ({k})', color='orange', linewidth=1)
+            ax.plot(df.index, df[d_col], label=f'%D ({d})', color='cyan', linewidth=1)
+            ax.axhline(y=80, color='r', linestyle='--', alpha=0.5)
+            ax.axhline(y=20, color='g', linestyle='--', alpha=0.5)
+            ax.fill_between(df.index, df[k_col], 80, where=(df[k_col] >= 80), interpolate=True, color='r', alpha=0.3)
+            ax.fill_between(df.index, df[k_col], 20, where=(df[k_col] <= 20), interpolate=True, color='g', alpha=0.3)
+            ax.set_ylabel('Stochastic')
+            ax.set_ylim(0, 100)
+
+    def _plot_adx(self, ax, df, params):
+        length = params.get('length', 14)
+        col_name = f'ADX_{length}'
+        if col_name in df.columns:
+            ax.plot(df.index, df[col_name], label=f'ADX ({length})', color='brown', linewidth=1)
+            ax.axhline(y=25, color='grey', linestyle='--', alpha=0.5, label='ADX Threshold (25)') # Common threshold
+            ax.set_ylabel('ADX')
+            ax.set_ylim(bottom=0) # ADX starts from 0
+
+    def _plot_willr(self, ax, df, params):
+        length = params.get('length', 14)
+        col_name = f'WILLR_{length}'
+        if col_name in df.columns:
+            ax.plot(df.index, df[col_name], label=f'Williams %R ({length})', color='lime', linewidth=1)
+            ax.axhline(y=-20, color='r', linestyle='--', alpha=0.5)
+            ax.axhline(y=-80, color='g', linestyle='--', alpha=0.5)
+            ax.fill_between(df.index, df[col_name], -20, where=(df[col_name] >= -20), interpolate=True, color='r', alpha=0.3)
+            ax.fill_between(df.index, df[col_name], -80, where=(df[col_name] <= -80), interpolate=True, color='g', alpha=0.3)
+            ax.set_ylabel('Williams %R')
+            ax.set_ylim(-100, 0)

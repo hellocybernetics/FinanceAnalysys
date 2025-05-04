@@ -18,8 +18,126 @@ class TechnicalAnalysis:
         """
         Initialize the TechnicalAnalysis class.
         """
-        pass
+        self.indicator_calculators = {
+            'SMA': self._calculate_sma,
+            'EMA': self._calculate_ema,
+            'RSI': self._calculate_rsi,
+            'MACD': self._calculate_macd,
+            'BBands': self._calculate_bbands,
+            'ATR': self._calculate_atr,
+            'Stochastic': self._calculate_stochastic,
+            'ADX': self._calculate_adx,
+            'WILLR': self._calculate_willr,
+        }
     
+    def _calculate_sma(self, result_df, params):
+        """Calculates Simple Moving Average (SMA)."""
+        length = params.get('length', 20)
+        sma = vbt.MA.run(result_df['Close'], length, short_name=f'SMA_{length}')
+        result_df[f'SMA_{length}'] = sma.ma
+        logger.info(f"Calculated SMA with length {length}")
+
+    def _calculate_ema(self, result_df, params):
+        """Calculates Exponential Moving Average (EMA)."""
+        length = params.get('length', 50)
+        ema = vbt.MA.run(result_df['Close'], length, short_name=f'EMA_{length}', ewm=True)
+        result_df[f'EMA_{length}'] = ema.ma
+        logger.info(f"Calculated EMA with length {length}")
+
+    def _calculate_rsi(self, result_df, params):
+        """Calculates Relative Strength Index (RSI)."""
+        length = params.get('length', 14)
+        rsi = vbt.RSI.run(result_df['Close'], window=length, short_name=f'RSI_{length}')
+        result_df[f'RSI_{length}'] = rsi.rsi
+        logger.info(f"Calculated RSI with length {length}")
+
+    def _calculate_macd(self, result_df, params):
+        """Calculates Moving Average Convergence Divergence (MACD)."""
+        fast = params.get('fast', 12)
+        slow = params.get('slow', 26)
+        signal = params.get('signal', 9)
+
+        fast_ema = vbt.MA.run(result_df['Close'], fast, short_name=f'EMA_{fast}', ewm=True)
+        slow_ema = vbt.MA.run(result_df['Close'], slow, short_name=f'EMA_{slow}', ewm=True)
+
+        macd_line = fast_ema.ma - slow_ema.ma
+        signal_line = vbt.MA.run(macd_line, signal, short_name=f'Signal_{signal}', ewm=True).ma
+        histogram = macd_line - signal_line
+
+        result_df[f'MACD_{fast}_{slow}'] = macd_line
+        result_df[f'MACD_Signal_{signal}'] = signal_line
+        result_df[f'MACD_Hist_{fast}_{slow}_{signal}'] = histogram
+        logger.info(f"Calculated MACD with fast={fast}, slow={slow}, signal={signal}")
+
+    def _calculate_bbands(self, result_df, params):
+        """Calculates Bollinger Bands."""
+        length = params.get('length', 20)
+        std = params.get('std', 2)
+
+        middle = vbt.MA.run(result_df['Close'], length, short_name=f'SMA_{length}').ma
+        rolling_std = result_df['Close'].rolling(window=length).std()
+
+        upper = middle + (rolling_std * std)
+        lower = middle - (rolling_std * std)
+
+        result_df[f'BBL_{length}_{std}'] = lower
+        result_df[f'BBM_{length}_{std}'] = middle
+        result_df[f'BBU_{length}_{std}'] = upper
+        logger.info(f"Calculated Bollinger Bands with length={length}, std={std}")
+
+    def _calculate_atr(self, result_df, params):
+        """Calculates Average True Range (ATR)."""
+        length = params.get('length', 14)
+        atr = vbt.ATR.run(
+            high=result_df['High'],
+            low=result_df['Low'],
+            close=result_df['Close'],
+            window=length,
+            short_name=f'ATR_{length}'
+        )
+        result_df[f'ATR_{length}'] = atr.atr
+        logger.info(f"Calculated ATR with length {length}")
+
+    def _calculate_stochastic(self, result_df, params):
+        """Calculates Stochastic Oscillator."""
+        k = params.get('k', 14)
+        d = params.get('d', 3)
+
+        stoch = vbt.Stochastic.run(
+            high=result_df['High'],
+            low=result_df['Low'],
+            close=result_df['Close'],
+            k_window=k,
+            d_window=d,
+            short_name=f'STOCH_{k}_{d}'
+        )
+
+        result_df[f'STOCHk_{k}_{d}'] = stoch.percent_k
+        result_df[f'STOCHd_{k}_{d}'] = stoch.percent_d
+        logger.info(f"Calculated Stochastic with k={k}, d={d}")
+
+    def _calculate_adx(self, result_df, params):
+        """Calculates Average Directional Index (ADX)."""
+        length = params.get('length', 14)
+        try:
+            adx_output = vbt.run_talib('ADX', result_df['High'], result_df['Low'], result_df['Close'], timeperiod=length)
+            result_df[f'ADX_{length}'] = adx_output.real
+            logger.info(f"Calculated ADX with length {length}")
+        except Exception as e:
+            logger.error(f"Error calculating ADX: {e}. Make sure TA-Lib is installed and data has sufficient length.")
+            result_df[f'ADX_{length}'] = np.nan # Add NaN column on error
+
+    def _calculate_willr(self, result_df, params):
+        """Calculates Williams %R."""
+        length = params.get('length', 14)
+        try:
+            willr_output = vbt.run_talib('WILLR', result_df['High'], result_df['Low'], result_df['Close'], timeperiod=length)
+            result_df[f'WILLR_{length}'] = willr_output.real
+            logger.info(f"Calculated Williams %R with length {length}")
+        except Exception as e:
+            logger.error(f"Error calculating Williams %R: {e}. Make sure TA-Lib is installed and data has sufficient length.")
+            result_df[f'WILLR_{length}'] = np.nan # Add NaN column on error
+
     def calculate_indicators(self, df, indicators):
         """
         Calculate technical indicators for the given dataframe using vectorbt.
@@ -45,97 +163,10 @@ class TechnicalAnalysis:
             params = indicator.get('params', {})
             
             try:
-                if name == 'SMA':
-                    length = params.get('length', 20)
-                    sma = vbt.MA.run(result_df['Close'], length, short_name=f'SMA_{length}')
-                    result_df[f'SMA_{length}'] = sma.ma
-                    logger.info(f"Calculated SMA with length {length}")
-                
-                elif name == 'EMA':
-                    length = params.get('length', 50)
-                    ema = vbt.MA.run(result_df['Close'], length, short_name=f'EMA_{length}', ewm=True)
-                    result_df[f'EMA_{length}'] = ema.ma
-                    logger.info(f"Calculated EMA with length {length}")
-                
-                elif name == 'RSI':
-                    length = params.get('length', 14)
-                    rsi = vbt.RSI.run(result_df['Close'], window=length, short_name=f'RSI_{length}')
-                    result_df[f'RSI_{length}'] = rsi.rsi
-                    logger.info(f"Calculated RSI with length {length}")
-                
-                elif name == 'MACD':
-                    fast = params.get('fast', 12)
-                    slow = params.get('slow', 26)
-                    signal = params.get('signal', 9)
-                    
-                    fast_ema = vbt.MA.run(result_df['Close'], fast, short_name=f'EMA_{fast}', ewm=True)
-                    slow_ema = vbt.MA.run(result_df['Close'], slow, short_name=f'EMA_{slow}', ewm=True)
-                    
-                    # Calculate MACD line (fast EMA - slow EMA)
-                    macd_line = fast_ema.ma - slow_ema.ma
-                    
-                    # Calculate signal line (EMA of MACD line)
-                    signal_line = vbt.MA.run(macd_line, signal, short_name=f'Signal_{signal}', ewm=True).ma
-                    
-                    # Calculate histogram (MACD line - signal line)
-                    histogram = macd_line - signal_line
-                    
-                    result_df[f'MACD_{fast}_{slow}'] = macd_line
-                    result_df[f'MACD_Signal_{signal}'] = signal_line
-                    result_df[f'MACD_Hist_{fast}_{slow}_{signal}'] = histogram
-                    logger.info(f"Calculated MACD with fast={fast}, slow={slow}, signal={signal}")
-                
-                elif name == 'BBands':
-                    length = params.get('length', 20)
-                    std = params.get('std', 2)
-                    
-                    # Calculate Bollinger Bands manually
-                    middle = vbt.MA.run(result_df['Close'], length, short_name=f'SMA_{length}').ma
-                    
-                    # Calculate standard deviation
-                    rolling_std = result_df['Close'].rolling(window=length).std()
-                    
-                    upper = middle + (rolling_std * std)
-                    lower = middle - (rolling_std * std)
-                    
-                    result_df[f'BBL_{length}_{std}'] = lower
-                    result_df[f'BBM_{length}_{std}'] = middle
-                    result_df[f'BBU_{length}_{std}'] = upper
-                    logger.info(f"Calculated Bollinger Bands with length={length}, std={std}")
-                
-                elif name == 'ATR':
-                    length = params.get('length', 14)
-                    atr = vbt.ATR.run(
-                        high=result_df['High'], 
-                        low=result_df['Low'], 
-                        close=result_df['Close'], 
-                        window=length,
-                        short_name=f'ATR_{length}'
-                    )
-                    result_df[f'ATR_{length}'] = atr.atr
-                    logger.info(f"Calculated ATR with length {length}")
-                
-                elif name == 'ADX':
-                    length = params.get('length', 14)
-                    logger.warning(f"ADX indicator not implemented in vectorbt")
-                
-                elif name == 'Stochastic':
-                    k = params.get('k', 14)
-                    d = params.get('d', 3)
-                    
-                    stoch = vbt.Stochastic.run(
-                        high=result_df['High'], 
-                        low=result_df['Low'], 
-                        close=result_df['Close'], 
-                        k_window=k, 
-                        d_window=d,
-                        short_name=f'STOCH_{k}_{d}'
-                    )
-                    
-                    result_df[f'STOCHk_{k}_{d}'] = stoch.percent_k
-                    result_df[f'STOCHd_{k}_{d}'] = stoch.percent_d
-                    logger.info(f"Calculated Stochastic with k={k}, d={d}")
-                
+                calculator = self.indicator_calculators.get(name)
+
+                if calculator:
+                    calculator(result_df, params)
                 else:
                     logger.warning(f"Indicator '{name}' not implemented")
             

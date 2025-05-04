@@ -39,6 +39,7 @@ result
 post_article/*
 data_cache/*
 analysis_results/*
+output/*
 
 
 # IDE
