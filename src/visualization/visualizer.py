@@ -40,7 +40,7 @@ class Visualizer:
                 logger.warning(f"Could not use style '{style}': {e}")
                 logger.info("Using default style instead")
     
-    def plot_price_with_indicators(self, df, symbol, indicators, output_dir=None, show_plots=False):
+    def plot_price_with_indicators(self, df, symbol, indicators, company_name=None, output_dir=None, show_plots=False):
         """
         Plot price data with technical indicators.
         
@@ -48,6 +48,7 @@ class Visualizer:
             df (pd.DataFrame): Dataframe containing price data and indicators.
             symbol (str): Symbol being plotted.
             indicators (list): List of indicator configurations.
+            company_name (str): Company name to display in the title.
             output_dir (str): Directory to save the plots to.
             show_plots (bool): Whether to display the plots.
             
@@ -169,7 +170,12 @@ class Visualizer:
         else:
             ax1.legend(loc='best')
         
-        plt.suptitle(f'{symbol} - Price and Technical Indicators', fontsize=16)
+        if company_name and company_name != symbol:
+            title = f'{symbol} - {company_name} - Technical Indicators'
+        else:
+            title = f'{symbol} - Technical Indicators'
+            
+        plt.suptitle(title, fontsize=16)
         plt.tight_layout()
         
         if output_dir:
@@ -191,3 +197,31 @@ class Visualizer:
             plt.close(fig)
         
         return filepath if output_dir else None
+        
+    def create_failed_symbols_report(self, failed_symbols, output_dir):
+        """
+        Create a report of symbols that failed to fetch data.
+        
+        Args:
+            failed_symbols (list): List of symbols that failed to fetch.
+            output_dir (str): Directory to save the report to.
+            
+        Returns:
+            str: Path to the saved report file, or None if not saved.
+        """
+        if not failed_symbols:
+            logger.info("No failed symbols to report")
+            return None
+            
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"failed_symbols_{timestamp}.txt"
+        filepath = os.path.join(output_dir, filename)
+        
+        with open(filepath, 'w') as f:
+            f.write("# TODO: Fix data retrieval for the following symbols\n\n")
+            for symbol in failed_symbols:
+                f.write(f"- {symbol}\n")
+        
+        logger.info(f"Saved failed symbols report to {filepath}")
+        return filepath

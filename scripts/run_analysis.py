@@ -90,13 +90,29 @@ def run_analysis(config_path, use_vectorbt=True, output_dir=None):
     visualizer = Visualizer(style=style, figsize=tuple(figsize), dpi=dpi)
     
     logger.info(f"Fetching data for {len(symbols)} symbols...")
-    data = data_fetcher.fetch_data(symbols, period=period, interval=interval)
+    data = data_fetcher.fetch_data(
+        symbols, 
+        period=period, 
+        interval=interval,
+        output_dir=data_dir,
+        use_cache=True,
+        cache_max_age=30
+    )
     
     data_fetcher.save_data(data, data_dir)
+    
+    failed_symbols = data_fetcher.get_failed_symbols()
+    if failed_symbols:
+        logger.warning(f"Failed to fetch data for {len(failed_symbols)} symbols: {failed_symbols}")
+        failed_report_path = visualizer.create_failed_symbols_report(failed_symbols, output_dir)
+        logger.info(f"Created TODO list for failed symbols: {failed_report_path}")
     
     results = {}
     for symbol, df in data.items():
         logger.info(f"\nProcessing {symbol}...")
+        
+        company_name = data_fetcher.get_company_name(symbol)
+        logger.info(f"Company name: {company_name}")
         
         logger.info(f"Calculating {len(indicators)} technical indicators...")
         df_with_indicators = technical_analyzer.calculate_indicators(df, indicators)
@@ -112,7 +128,8 @@ def run_analysis(config_path, use_vectorbt=True, output_dir=None):
         image_path = visualizer.plot_price_with_indicators(
             df_with_indicators, 
             symbol, 
-            indicators, 
+            indicators,
+            company_name=company_name,
             output_dir=images_dir, 
             show_plots=show_plots
         )
@@ -120,7 +137,8 @@ def run_analysis(config_path, use_vectorbt=True, output_dir=None):
         results[symbol] = {
             'raw_data': df.shape,
             'processed_data': df_with_indicators.shape,
-            'image_path': image_path
+            'image_path': image_path,
+            'company_name': company_name
         }
     
     logger.info("\n=== Analysis Summary ===")
