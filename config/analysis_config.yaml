@@ -1,0 +1,52 @@
+
+data:
+  symbols:
+    - AAPL     # Apple Inc.
+    - MSFT     # Microsoft Corporation
+    - 7203.T   # Toyota Motor Corporation (Japan)
+    - 9984.T   # SoftBank Group Corp. (Japan)
+    - BTC-USD  # Bitcoin
+
+  period: 1y  # Options: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max
+
+  interval: 1d  # Options: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo
+
+indicators:
+  - name: SMA
+    params:
+      length: 20
+    plot: true
+  
+  - name: EMA
+    params:
+      length: 50
+    plot: true
+  
+  - name: RSI
+    params:
+      length: 14
+    plot: true
+  
+  - name: MACD
+    params:
+      fast: 12
+      slow: 26
+      signal: 9
+    plot: true
+  
+  - name: BBands
+    params:
+      length: 20
+      std: 2
+    plot: true
+
+visualization:
+  output_dir: "output/images"
+  
+  style: "seaborn"  # Options: default, bmh, dark_background, seaborn, etc.
+  
+  figsize: [12, 8]
+  
+  dpi: 300
+  
+  show_plots: false
