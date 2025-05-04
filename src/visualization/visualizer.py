@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import logging
+import io # Added for save_figure_to_buffer
 
 logger = logging.getLogger(__name__)
 
@@ -55,25 +56,23 @@ class Visualizer:
                 logger.warning(f"Could not use style '{style}': {e}")
                 logger.info("Using default style instead")
     
-    def plot_price_with_indicators(self, df, symbol, indicators, company_name=None, output_dir=None, show_plots=False):
+    def create_plot_figure(self, df, symbol, indicators, company_name=None):
         """
-        Plot price data with technical indicators.
+        Create a Matplotlib Figure object with price data and technical indicators.
         
         Args:
             df (pd.DataFrame): Dataframe containing price data and indicators.
             symbol (str): Symbol being plotted.
             indicators (list): List of indicator configurations.
             company_name (str): Company name to display in the title.
-            output_dir (str): Directory to save the plots to.
-            show_plots (bool): Whether to display the plots.
             
         Returns:
-            str: Path to the saved image file, or None if not saved.
+            matplotlib.figure.Figure: The generated Figure object, or None if plotting is skipped.
         """
         # Filter indicators that should be plotted
         indicators_to_plot = [ind for ind in indicators if ind.get('plot', True)]
         if not indicators_to_plot and 'Close' not in df.columns:
-             logger.warning(f"No indicators to plot and no 'Close' column for {symbol}. Skipping plot.")
+             logger.warning(f"No indicators to plot and no 'Close' column for {symbol}. Skipping plot creation.")
              return None
 
         # Categorize indicators
@@ -140,7 +139,7 @@ class Visualizer:
         # --- Final Touches --- 
         all_axes = [ax1] + subplot_axes
         for ax in all_axes:
-            ax.grid(True, alpha=0.3) # Add legend to each axes
+            ax.grid(True, alpha=0.3) # Add grid to each axes (legend added later)
             # Set date formatter for x-axis (only needed for the last one if shared)
             ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
             
@@ -155,7 +154,8 @@ class Visualizer:
             for handle, label in zip(handles, labels):
                 if label not in unique_labels:
                     unique_labels[label] = handle
-            ax.legend(unique_labels.values(), unique_labels.keys(), loc='upper left') 
+            if unique_labels: # Only add legend if there are items to show
+                ax.legend(unique_labels.values(), unique_labels.keys(), loc='upper left') 
 
         # Set x-label only on the bottom-most axis
         all_axes[-1].set_xlabel('Date')
@@ -166,38 +166,83 @@ class Visualizer:
             title = f'{symbol} - {company_name} - Technical Analysis'
         else:
             title = f'{symbol} - Technical Analysis'
-        plt.suptitle(title, fontsize=16)
+        # Use fig.suptitle instead of plt.suptitle for Figure object context
+        fig.suptitle(title, fontsize=16) 
         
         # Improve layout
-        plt.tight_layout(rect=(0, 0.03, 1, 0.97)) # Adjust rect to prevent title overlap
+        # Use fig.tight_layout instead of plt.tight_layout
+        fig.tight_layout(rect=(0, 0.03, 1, 0.97)) # Adjust rect to prevent title overlap
 
-        # --- Save / Show --- 
+        # Do NOT save, show, or close the figure here. Return it.
+        return fig
+
+    def save_figure_to_file(self, fig, symbol, output_dir):
+        """
+        Save a Matplotlib Figure object to a file.
+        
+        Args:
+            fig (matplotlib.figure.Figure): The Figure object to save.
+            symbol (str): Symbol for naming the file.
+            output_dir (str): Directory to save the plot to.
+            
+        Returns:
+            str: Path to the saved image file, or None if saving fails or fig is None.
+        """
+        if fig is None:
+            logger.warning("Figure object is None, cannot save to file.")
+            return None
+        if not output_dir:
+            logger.warning("Output directory not provided, cannot save figure.")
+            plt.close(fig) # Close the figure even if not saving
+            return None
+            
         filepath = None
-        if output_dir:
+        try:
             os.makedirs(output_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             clean_symbol = symbol.replace('/', '-').replace('^', '') # Clean symbol for filename
             filename = f"{clean_symbol}_analysis_{timestamp}.png"
             filepath = os.path.join(output_dir, filename)
-            try:
-                plt.savefig(filepath, dpi=self.dpi, bbox_inches='tight')
-                logger.info(f"Saved plot for {symbol} to {filepath}")
-            except Exception as e:
-                 logger.error(f"Failed to save plot to {filepath}: {e}")
-                 filepath = None # Ensure filepath is None if save fails
-
-            if not show_plots: # Close figure only if saving and not showing
-                plt.close(fig)
-                # return filepath # Return inside if block ? No, return outside
-
-        if show_plots:
-            plt.show()
-        elif not output_dir: # Close if not saving and not showing
-             plt.close(fig)
-        elif output_dir and not show_plots: # Already closed if saved and not showing
-            pass # Figure is already closed
+            
+            fig.savefig(filepath, dpi=self.dpi, bbox_inches='tight')
+            logger.info(f"Saved plot for {symbol} to {filepath}")
+        except Exception as e:
+             logger.error(f"Failed to save plot to {filepath}: {e}")
+             filepath = None # Ensure filepath is None if save fails
+        finally:
+             # Always close the figure after attempting to save
+             plt.close(fig) 
              
         return filepath
+
+    def save_figure_to_buffer(self, fig, format='png'):
+        """
+        Save a Matplotlib Figure object to an in-memory buffer.
+        
+        Args:
+            fig (matplotlib.figure.Figure): The Figure object to save.
+            format (str): The image format (e.g., 'png', 'jpeg').
+            
+        Returns:
+            io.BytesIO: Buffer containing the image data, or None if saving fails or fig is None.
+        """
+        if fig is None:
+            logger.warning("Figure object is None, cannot save to buffer.")
+            return None
+            
+        buf = io.BytesIO()
+        try:
+            fig.savefig(buf, format=format, dpi=self.dpi, bbox_inches='tight')
+            buf.seek(0)
+            logger.info(f"Saved figure to in-memory buffer (format: {format})")
+        except Exception as e:
+            logger.error(f"Failed to save figure to buffer: {e}")
+            buf = None # Ensure buf is None if save fails
+        finally:
+            # Always close the figure after attempting to save
+            plt.close(fig) 
+            
+        return buf
         
     def create_failed_symbols_report(self, failed_symbols, output_dir):
         """

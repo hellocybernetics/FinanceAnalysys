@@ -9,6 +9,7 @@ import json
 import argparse
 from datetime import datetime
 import logging
+import matplotlib.pyplot as plt
 
 logging.basicConfig(
     level=logging.INFO,
@@ -125,14 +126,30 @@ def run_analysis(config_path, use_vectorbt=True, output_dir=None):
         logger.info(f"Saved processed data to {processed_filepath}")
         
         logger.info(f"Creating visualization...")
-        image_path = visualizer.plot_price_with_indicators(
+        image_path = None
+        
+        fig = visualizer.create_plot_figure(
             df_with_indicators, 
             symbol, 
             indicators,
-            company_name=company_name,
-            output_dir=images_dir, 
-            show_plots=show_plots
+            company_name=company_name
         )
+
+        if fig:
+            if images_dir:
+                image_path = visualizer.save_figure_to_file(fig, symbol, images_dir)
+            elif show_plots:
+                try:
+                    plt.show()
+                except Exception as e:
+                    logger.warning(f"Could not display plot interactively for {symbol}: {e}")
+                finally:
+                    plt.close(fig)
+            else:
+                logger.info(f"Figure created for {symbol} but not saving or showing.")
+                plt.close(fig)
+        else:
+            logger.warning(f"Skipped saving/showing plot for {symbol} as figure creation failed.")
         
         results[symbol] = {
             'raw_data': df.shape,

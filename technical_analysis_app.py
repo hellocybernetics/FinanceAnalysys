@@ -225,20 +225,23 @@ if analyze_button or 'data' in st.session_state:
     with st.spinner("Creating visualization..."):
         visualizer = Visualizer(figsize=(fig_width, fig_height))
         
-        buf = io.BytesIO()
-        
-        visualizer.plot_price_with_indicators(
+        # Create the figure object
+        fig = visualizer.create_plot_figure(
             df_with_indicators, 
             st.session_state.symbol, 
             indicators, 
-            company_name=st.session_state.company_name,
-            show_plots=False
+            company_name=st.session_state.company_name
         )
         
-        plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
-        buf.seek(0)
+        buf = None
+        if fig:
+            # Save the figure to a buffer
+            buf = visualizer.save_figure_to_buffer(fig, format='png')
         
-        st.image(buf, use_container_width=True)
+        if buf:
+            st.image(buf, use_container_width=True)
+        else:
+            st.warning("Could not generate the plot. Please check the logs or selected indicators.")
     
     with st.expander("View Data Table"):
         st.dataframe(df_with_indicators)
@@ -253,12 +256,13 @@ if analyze_button or 'data' in st.session_state:
             mime="text/csv",
         )
     with col2:
-        st.download_button(
-            label="Download Chart",
-            data=buf,
-            file_name=f"{symbol}_technical_analysis.png",
-            mime="image/png",
-        )
+        if buf: # Only show download button if buffer exists
+            st.download_button(
+                label="Download Chart",
+                data=buf,
+                file_name=f"{symbol}_technical_analysis.png",
+                mime="image/png",
+            )
 
 else:
     st.info("Enter a stock symbol and select technical indicators in the sidebar, then click 'Analyze' to generate the analysis.")
