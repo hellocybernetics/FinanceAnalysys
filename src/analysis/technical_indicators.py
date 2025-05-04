@@ -68,33 +68,39 @@ class TechnicalAnalysis:
                     slow = params.get('slow', 26)
                     signal = params.get('signal', 9)
                     
-                    macd = vbt.MACD.run(
-                        result_df['Close'], 
-                        fast=fast, 
-                        slow=slow, 
-                        signal=signal,
-                        short_name=f'MACD_{fast}_{slow}'
-                    )
+                    fast_ema = vbt.MA.run(result_df['Close'], fast, short_name=f'EMA_{fast}', ewm=True)
+                    slow_ema = vbt.MA.run(result_df['Close'], slow, short_name=f'EMA_{slow}', ewm=True)
                     
-                    result_df[f'MACD_{fast}_{slow}'] = macd.macd
-                    result_df[f'MACD_Signal_{signal}'] = macd.signal
-                    result_df[f'MACD_Hist_{fast}_{slow}_{signal}'] = macd.hist
+                    # Calculate MACD line (fast EMA - slow EMA)
+                    macd_line = fast_ema.ma - slow_ema.ma
+                    
+                    # Calculate signal line (EMA of MACD line)
+                    signal_line = vbt.MA.run(macd_line, signal, short_name=f'Signal_{signal}', ewm=True).ma
+                    
+                    # Calculate histogram (MACD line - signal line)
+                    histogram = macd_line - signal_line
+                    
+                    result_df[f'MACD_{fast}_{slow}'] = macd_line
+                    result_df[f'MACD_Signal_{signal}'] = signal_line
+                    result_df[f'MACD_Hist_{fast}_{slow}_{signal}'] = histogram
                     logger.info(f"Calculated MACD with fast={fast}, slow={slow}, signal={signal}")
                 
                 elif name == 'BBands':
                     length = params.get('length', 20)
                     std = params.get('std', 2)
                     
-                    bb = vbt.BBands.run(
-                        result_df['Close'], 
-                        window=length, 
-                        alpha=std,
-                        short_name=f'BB_{length}_{std}'
-                    )
+                    # Calculate Bollinger Bands manually
+                    middle = vbt.MA.run(result_df['Close'], length, short_name=f'SMA_{length}').ma
                     
-                    result_df[f'BBL_{length}_{std}'] = bb.lower
-                    result_df[f'BBM_{length}_{std}'] = bb.middle
-                    result_df[f'BBU_{length}_{std}'] = bb.upper
+                    # Calculate standard deviation
+                    rolling_std = result_df['Close'].rolling(window=length).std()
+                    
+                    upper = middle + (rolling_std * std)
+                    lower = middle - (rolling_std * std)
+                    
+                    result_df[f'BBL_{length}_{std}'] = lower
+                    result_df[f'BBM_{length}_{std}'] = middle
+                    result_df[f'BBU_{length}_{std}'] = upper
                     logger.info(f"Calculated Bollinger Bands with length={length}, std={std}")
                 
                 elif name == 'ATR':
