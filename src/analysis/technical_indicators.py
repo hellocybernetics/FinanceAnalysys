@@ -1,10 +1,10 @@
 """
-Technical analysis module for calculating technical indicators using pandas_ta.
+Technical analysis module for calculating technical indicators using vectorbt.
 """
 
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
+import vectorbt as vbt
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class TechnicalAnalysis:
     
     def calculate_indicators(self, df, indicators):
         """
-        Calculate technical indicators for the given dataframe using pandas_ta.
+        Calculate technical indicators for the given dataframe using vectorbt.
         
         Args:
             df (pd.DataFrame): Dataframe containing OHLCV data.
@@ -47,17 +47,20 @@ class TechnicalAnalysis:
             try:
                 if name == 'SMA':
                     length = params.get('length', 20)
-                    result_df[f'SMA_{length}'] = ta.sma(result_df['Close'], length=length)
+                    sma = vbt.MA.run(result_df['Close'], length, short_name=f'SMA_{length}')
+                    result_df[f'SMA_{length}'] = sma.ma
                     logger.info(f"Calculated SMA with length {length}")
                 
                 elif name == 'EMA':
                     length = params.get('length', 50)
-                    result_df[f'EMA_{length}'] = ta.ema(result_df['Close'], length=length)
+                    ema = vbt.MA.run(result_df['Close'], length, short_name=f'EMA_{length}', ewm=True)
+                    result_df[f'EMA_{length}'] = ema.ma
                     logger.info(f"Calculated EMA with length {length}")
                 
                 elif name == 'RSI':
                     length = params.get('length', 14)
-                    result_df[f'RSI_{length}'] = ta.rsi(result_df['Close'], length=length)
+                    rsi = vbt.RSI.run(result_df['Close'], window=length, short_name=f'RSI_{length}')
+                    result_df[f'RSI_{length}'] = rsi.rsi
                     logger.info(f"Calculated RSI with length {length}")
                 
                 elif name == 'MACD':
@@ -65,68 +68,66 @@ class TechnicalAnalysis:
                     slow = params.get('slow', 26)
                     signal = params.get('signal', 9)
                     
-                    macd_result = ta.macd(
+                    macd = vbt.MACD.run(
                         result_df['Close'], 
                         fast=fast, 
                         slow=slow, 
-                        signal=signal
+                        signal=signal,
+                        short_name=f'MACD_{fast}_{slow}'
                     )
                     
-                    result_df[f'MACD_{fast}_{slow}'] = macd_result['MACD']
-                    result_df[f'MACD_Signal_{signal}'] = macd_result['MACDs']
-                    result_df[f'MACD_Hist_{fast}_{slow}_{signal}'] = macd_result['MACDh']
+                    result_df[f'MACD_{fast}_{slow}'] = macd.macd
+                    result_df[f'MACD_Signal_{signal}'] = macd.signal
+                    result_df[f'MACD_Hist_{fast}_{slow}_{signal}'] = macd.hist
                     logger.info(f"Calculated MACD with fast={fast}, slow={slow}, signal={signal}")
                 
                 elif name == 'BBands':
                     length = params.get('length', 20)
                     std = params.get('std', 2)
                     
-                    bbands_result = ta.bbands(
+                    bb = vbt.BBands.run(
                         result_df['Close'], 
-                        length=length, 
-                        std=std
+                        window=length, 
+                        alpha=std,
+                        short_name=f'BB_{length}_{std}'
                     )
                     
-                    result_df[f'BBL_{length}_{std}'] = bbands_result['BBL']
-                    result_df[f'BBM_{length}_{std}'] = bbands_result['BBM']
-                    result_df[f'BBU_{length}_{std}'] = bbands_result['BBU']
+                    result_df[f'BBL_{length}_{std}'] = bb.lower
+                    result_df[f'BBM_{length}_{std}'] = bb.middle
+                    result_df[f'BBU_{length}_{std}'] = bb.upper
                     logger.info(f"Calculated Bollinger Bands with length={length}, std={std}")
                 
                 elif name == 'ATR':
                     length = params.get('length', 14)
-                    result_df[f'ATR_{length}'] = ta.atr(
+                    atr = vbt.ATR.run(
                         high=result_df['High'], 
                         low=result_df['Low'], 
                         close=result_df['Close'], 
-                        length=length
+                        window=length,
+                        short_name=f'ATR_{length}'
                     )
+                    result_df[f'ATR_{length}'] = atr.atr
                     logger.info(f"Calculated ATR with length {length}")
                 
                 elif name == 'ADX':
                     length = params.get('length', 14)
-                    adx_result = ta.adx(
-                        high=result_df['High'], 
-                        low=result_df['Low'], 
-                        close=result_df['Close'], 
-                        length=length
-                    )
-                    result_df[f'ADX_{length}'] = adx_result[f'ADX_{length}']
-                    logger.info(f"Calculated ADX with length {length}")
+                    logger.warning(f"ADX indicator not implemented in vectorbt")
                 
                 elif name == 'Stochastic':
                     k = params.get('k', 14)
                     d = params.get('d', 3)
                     
-                    stoch_result = ta.stoch(
+                    stoch = vbt.Stochastic.run(
                         high=result_df['High'], 
                         low=result_df['Low'], 
                         close=result_df['Close'], 
-                        k=k, 
-                        d=d
+                        k_window=k, 
+                        d_window=d,
+                        short_name=f'STOCH_{k}_{d}'
                     )
                     
-                    result_df[f'STOCHk_{k}_{d}'] = stoch_result[f'STOCHk_{k}']
-                    result_df[f'STOCHd_{k}_{d}'] = stoch_result[f'STOCHd_{d}']
+                    result_df[f'STOCHk_{k}_{d}'] = stoch.percent_k
+                    result_df[f'STOCHd_{k}_{d}'] = stoch.percent_d
                     logger.info(f"Calculated Stochastic with k={k}, d={d}")
                 
                 else:
