@@ -18,7 +18,7 @@ class Visualizer:
     Class for visualizing financial data and technical indicators.
     """
     
-    def __init__(self, style='seaborn', figsize=(12, 8), dpi=300):
+    def __init__(self, style='seaborn-v0_8', figsize=(12, 8), dpi=300):
         """
         Initialize the Visualizer.
         
@@ -31,7 +31,14 @@ class Visualizer:
         self.figsize = figsize
         self.dpi = dpi
         
-        plt.style.use(style)
+        sns.set_theme()
+        
+        if style:
+            try:
+                plt.style.use(style)
+            except Exception as e:
+                logger.warning(f"Could not use style '{style}': {e}")
+                logger.info("Using default style instead")
     
     def plot_price_with_indicators(self, df, symbol, indicators, output_dir=None, show_plots=False):
         """
