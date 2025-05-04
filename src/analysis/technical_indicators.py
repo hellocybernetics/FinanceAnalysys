@@ -103,40 +103,57 @@ class TechnicalAnalysis:
         k = params.get('k', 14)
         d = params.get('d', 3)
 
-        stoch = vbt.Stochastic.run(
-            high=result_df['High'],
-            low=result_df['Low'],
-            close=result_df['Close'],
-            k_window=k,
-            d_window=d,
-            short_name=f'STOCH_{k}_{d}'
-        )
-
-        result_df[f'STOCHk_{k}_{d}'] = stoch.percent_k
-        result_df[f'STOCHd_{k}_{d}'] = stoch.percent_d
-        logger.info(f"Calculated Stochastic with k={k}, d={d}")
+        try:
+            stoch_factory = vbt.IndicatorFactory.from_talib('STOCH')
+            stoch = stoch_factory.run(
+                high=result_df['High'],
+                low=result_df['Low'],
+                close=result_df['Close'],
+                fastk_period=k,
+                slowk_period=d,
+                slowd_period=d
+            )
+            result_df[f'STOCHk_{k}_{d}'] = stoch.slowk
+            result_df[f'STOCHd_{k}_{d}'] = stoch.slowd
+            logger.info(f"Calculated Stochastic with k={k}, d={d} using TA-Lib")
+        except Exception as e:
+            logger.error(f"Error calculating Stochastic: {e}. Make sure TA-Lib is installed and data has sufficient length.")
+            result_df[f'STOCHk_{k}_{d}'] = np.nan
+            result_df[f'STOCHd_{k}_{d}'] = np.nan
 
     def _calculate_adx(self, result_df, params):
         """Calculates Average Directional Index (ADX)."""
         length = params.get('length', 14)
         try:
-            adx_output = vbt.run_talib('ADX', result_df['High'], result_df['Low'], result_df['Close'], timeperiod=length)
+            adx_factory = vbt.IndicatorFactory.from_talib('ADX')
+            adx_output = adx_factory.run(
+                high=result_df['High'],
+                low=result_df['Low'],
+                close=result_df['Close'],
+                timeperiod=length
+            )
             result_df[f'ADX_{length}'] = adx_output.real
-            logger.info(f"Calculated ADX with length {length}")
+            logger.info(f"Calculated ADX with length {length} using TA-Lib")
         except Exception as e:
             logger.error(f"Error calculating ADX: {e}. Make sure TA-Lib is installed and data has sufficient length.")
-            result_df[f'ADX_{length}'] = np.nan # Add NaN column on error
+            result_df[f'ADX_{length}'] = np.nan
 
     def _calculate_willr(self, result_df, params):
         """Calculates Williams %R."""
         length = params.get('length', 14)
         try:
-            willr_output = vbt.run_talib('WILLR', result_df['High'], result_df['Low'], result_df['Close'], timeperiod=length)
+            willr_factory = vbt.IndicatorFactory.from_talib('WILLR')
+            willr_output = willr_factory.run(
+                high=result_df['High'],
+                low=result_df['Low'],
+                close=result_df['Close'],
+                timeperiod=length
+            )
             result_df[f'WILLR_{length}'] = willr_output.real
-            logger.info(f"Calculated Williams %R with length {length}")
+            logger.info(f"Calculated Williams %R with length {length} using TA-Lib")
         except Exception as e:
             logger.error(f"Error calculating Williams %R: {e}. Make sure TA-Lib is installed and data has sufficient length.")
-            result_df[f'WILLR_{length}'] = np.nan # Add NaN column on error
+            result_df[f'WILLR_{length}'] = np.nan
 
     def calculate_indicators(self, df, indicators):
         """

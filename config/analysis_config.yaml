@@ -1,4 +1,3 @@
-
 data:
   symbols:
     - AAPL     # Apple Inc.
@@ -38,6 +37,22 @@ indicators:
     params:
       length: 20
       std: 2
+    plot: true
+
+  - name: Stochastic
+    params:
+      k: 14
+      d: 3
+    plot: true
+  
+  - name: ADX
+    params:
+      length: 14
+    plot: true
+  
+  - name: WILLR
+    params:
+      length: 14
     plot: true
 
 visualization:
