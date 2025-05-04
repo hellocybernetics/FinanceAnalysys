@@ -169,7 +169,7 @@ class Visualizer:
         plt.suptitle(title, fontsize=16)
         
         # Improve layout
-        plt.tight_layout(rect=[0, 0.03, 1, 0.97]) # Adjust rect to prevent title overlap
+        plt.tight_layout(rect=(0, 0.03, 1, 0.97)) # Adjust rect to prevent title overlap
 
         # --- Save / Show --- 
         filepath = None
