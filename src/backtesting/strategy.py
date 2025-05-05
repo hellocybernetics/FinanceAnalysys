@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
 import logging
+import vectorbt as vbt # Import vectorbt
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +35,14 @@ class Strategy(ABC):
             data (pd.DataFrame): OHLCV価格データを含むDataFrame
             
         Returns:
-            pd.DataFrame: 'signal'列を含むDataFrame。通常、1=買い, -1=売り, 0=ホールドを表す
+            pd.DataFrame: 'long_entries', 'long_exits', 'short_entries', 'short_exits' の
+                          4つのブール列を含むDataFrame。
         """
         pass
     
     def calculate_position_size(self, data, signals, initial_capital=10000.0):
         """
-        各取引に対するポジションサイズを計算する（オプションでオーバーライド可能）
+        各取引に対するポジションサイズを計算する（サブクラスで実装する必要あり）
         
         Args:
             data (pd.DataFrame): OHLCV価格データを含むDataFrame
@@ -48,9 +50,11 @@ class Strategy(ABC):
             initial_capital (float): 初期資本
             
         Returns:
-            pd.Series: 各時点での保有する量
+            pd.Series: 各時点での取引する量 (例: 株数)。シグナルがない時点はNaNまたは0。
         """
-        return signals['signal'] * (initial_capital / data['Close'].iloc[0])
+        # Default implementation removed, forcing subclasses to implement calculate_position_size
+        raise NotImplementedError("Subclasses must implement calculate_position_size")
+        # return signals['signal'] * (initial_capital / data['Close'].iloc[0]) # Old static logic
 
 
 class MovingAverageCrossoverStrategy(Strategy):
@@ -75,25 +79,45 @@ class MovingAverageCrossoverStrategy(Strategy):
     
     def generate_signals(self, data):
         """
-        移動平均交差に基づいてシグナルを生成する
+        移動平均交差に基づいてシグナルを生成する (vectorbt使用)
         
         Args:
             data (pd.DataFrame): OHLCV価格データを含むDataFrame
             
         Returns:
-            pd.DataFrame: 'signal'列を含むDataFrame
+            pd.DataFrame: long_entries, long_exits, short_entries, short_exits を含むDataFrame
         """
-        signals = data.copy()
-        signals['signal'] = 0
+        close = data['Close']
+        # Calculate SMAs using vectorbt
+        short_ma_indicator = vbt.MA.run(close, window=self.short_window, short_name='fast')
+        long_ma_indicator = vbt.MA.run(close, window=self.long_window, short_name='slow')
         
-        signals[f'SMA_{self.short_window}'] = signals['Close'].rolling(window=self.short_window).mean()
-        signals[f'SMA_{self.long_window}'] = signals['Close'].rolling(window=self.long_window).mean()
+        # Generate long entry/exit signals based on crossover
+        long_entries = short_ma_indicator.ma_crossed_above(long_ma_indicator.ma)
+        long_exits = short_ma_indicator.ma_crossed_below(long_ma_indicator.ma)
         
-        signals['signal'] = 0 # Default to 0
-        signals.loc[signals[f'SMA_{self.short_window}'] > signals[f'SMA_{self.long_window}'], 'signal'] = 1  # Buy signal
-        signals.loc[signals[f'SMA_{self.short_window}'] < signals[f'SMA_{self.long_window}'], 'signal'] = -1 # Sell signal
+        # This strategy doesn't generate short signals
+        short_entries = pd.Series(False, index=data.index)
+        short_exits = pd.Series(False, index=data.index)
         
-        return signals
+        signals_df = pd.DataFrame({
+            'long_entries': long_entries,
+            'long_exits': long_exits,
+            'short_entries': short_entries,
+            'short_exits': short_exits,
+            # Optionally include indicator values for visualization/debugging
+            f'SMA_{self.short_window}': short_ma_indicator.ma,
+            f'SMA_{self.long_window}': long_ma_indicator.ma
+        })
+
+        return signals_df
+
+    def calculate_position_size(self, data, signals, initial_capital=10000.0):
+        """固定株数（例: 10株）を取引するサイズ指定を生成"""
+        size_series = pd.Series(0.0, index=signals.index) # Default size 0
+        # Trade 10 shares on long entry or exit signals
+        size_series[signals['long_entries'] | signals['long_exits']] = 10.0
+        return size_series
 
 
 class RSIStrategy(Strategy):
@@ -120,27 +144,40 @@ class RSIStrategy(Strategy):
     
     def generate_signals(self, data):
         """
-        RSIに基づいてシグナルを生成する
+        RSIに基づいてシグナルを生成する (vectorbt使用)
         
         Args:
             data (pd.DataFrame): OHLCV価格データを含むDataFrame
             
         Returns:
-            pd.DataFrame: 'signal'列を含むDataFrame
+            pd.DataFrame: long_entries, long_exits, short_entries, short_exits を含むDataFrame
         """
-        signals = data.copy()
-        signals['signal'] = 0
+        close = data['Close']
+        # Calculate RSI using vectorbt
+        rsi_indicator = vbt.RSI.run(close, window=self.rsi_period)
+        rsi = rsi_indicator.rsi
         
-        delta = signals['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        # Generate signals based on oversold/overbought levels
+        long_entries = rsi < self.oversold
+        short_exits = long_entries # Exit short when oversold is reached
         
-        rs = gain / loss
-        signals['RSI'] = 100 - (100 / (1 + rs))
+        short_entries = rsi > self.overbought
+        long_exits = short_entries # Exit long when overbought is reached
         
-        signals['signal'] = np.where(signals['RSI'] < self.oversold, 1, 0)
-        signals['signal'] = np.where(signals['RSI'] > self.overbought, -1, signals['signal'])
+        signals_df = pd.DataFrame({
+            'long_entries': long_entries,
+            'long_exits': long_exits,
+            'short_entries': short_entries,
+            'short_exits': short_exits,
+            # Optionally include RSI value
+            'RSI': rsi
+        })
         
-        signals['position'] = signals['signal'].diff()
-        
-        return signals
+        return signals_df
+
+    def calculate_position_size(self, data, signals, initial_capital=10000.0):
+        """固定株数（例: 10株）を取引するサイズ指定を生成"""
+        size_series = pd.Series(0.0, index=signals.index) # Default size 0
+        # Trade 10 shares when any signal occurs
+        size_series[signals['long_entries'] | signals['long_exits'] | signals['short_entries'] | signals['short_exits']] = 10.0
+        return size_series

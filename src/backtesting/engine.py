@@ -9,6 +9,7 @@ from datetime import datetime
 import logging
 import os
 import vectorbt as vbt
+from vectorbt.portfolio.enums import SizeType
 
 from ..data.data_fetcher import DataFetcher
 from .strategy import Strategy
@@ -73,26 +74,30 @@ class BacktestEngine:
             logger.warning("Could not infer data frequency. Assuming daily ('D').")
         # --- End Frequency Handling ---
         
-        signals = strategy.generate_signals(data)
+        signals_df = strategy.generate_signals(data)
+        size_series = strategy.calculate_position_size(data, signals_df, initial_capital)
         
-        positions = strategy.calculate_position_size(data, signals, initial_capital)
-        
-        if signals is None or 'signal' not in signals.columns:
-            logger.error("Invalid signals data: signal column not found")
+        if signals_df is None or not all(col in signals_df.columns for col in ['long_entries', 'long_exits', 'short_entries', 'short_exits']):
+            logger.error("Invalid signals data: required signal columns not found")
             portfolio = vbt.Portfolio.from_holding(
                 data['Close'], 
                 init_cash=initial_capital,
                 fees=commission,
-                freq=freq_to_use # Use inferred/default frequency
+                freq=freq_to_use
             )
         else:
+            logger.info("Creating portfolio with dynamic size based on 'Amount' (shares)")
             portfolio = vbt.Portfolio.from_signals(
                 data['Close'],
-                entries=signals['signal'] > 0,
-                exits=signals['signal'] < 0,
+                entries=signals_df['long_entries'],
+                exits=signals_df['long_exits'],
+                short_entries=signals_df['short_entries'],
+                short_exits=signals_df['short_exits'],
+                size=size_series,
+                size_type=SizeType.Amount,
                 init_cash=initial_capital,
                 fees=commission,
-                freq=freq_to_use # Use inferred/default frequency
+                freq=freq_to_use
             )
         
         stats = portfolio.stats()
@@ -100,7 +105,7 @@ class BacktestEngine:
         result = {
             'portfolio': portfolio,
             'stats': stats,
-            'signals': signals,
+            'signals': signals_df,
             'equity_curve': portfolio.value(),
             'drawdown': portfolio.drawdown(),
             'trades': portfolio.trades,
@@ -131,44 +136,38 @@ class BacktestEngine:
         elif strategy_name is None:
             strategy_name = "Unknown Strategy"
         
-        fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True)
+        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
         
-        ax1 = axes[0]
-        if 'signals' in result and result['signals'] is not None and 'Close' in result['signals'].columns:
-            result['signals']['Close'].plot(ax=ax1, label='Close Price')
-            
-            if 'signal' in result['signals'].columns:
-                buy_signals = result['signals'][result['signals']['signal'] > 0]
-                sell_signals = result['signals'][result['signals']['signal'] < 0]
-                
-                if not buy_signals.empty:
-                    ax1.plot(buy_signals.index, buy_signals['Close'], '^', markersize=10, color='g', label='Buy Signal')
-                if not sell_signals.empty:
-                    ax1.plot(sell_signals.index, sell_signals['Close'], 'v', markersize=10, color='r', label='Sell Signal')
-            
-            for col in result['signals'].columns:
-                if 'SMA' in col or 'EMA' in col:
-                    result['signals'][col].plot(ax=ax1, label=col)
+        # 1. 価格と売買シグナル
+        ax1.plot(result['portfolio'].close.index, result['portfolio'].close, label='Close Price')
+        
+        # Plot new signals using portfolio.close as the price level
+        long_entry_signals = result['portfolio'].close[result['signals']['long_entries']]
+        long_exit_signals = result['portfolio'].close[result['signals']['long_exits']]
+        short_entry_signals = result['portfolio'].close[result['signals']['short_entries']]
+        short_exit_signals = result['portfolio'].close[result['signals']['short_exits']]
+        
+        ax1.plot(long_entry_signals.index, long_entry_signals, '^', markersize=10, color='g', label='Long Entry')
+        ax1.plot(long_exit_signals.index, long_exit_signals, 'v', markersize=10, color='r', label='Long Exit')
+        ax1.plot(short_entry_signals.index, short_entry_signals, 'v', markersize=10, color='m', label='Short Entry') # Magenta for short entry
+        ax1.plot(short_exit_signals.index, short_exit_signals, '^', markersize=10, color='c', label='Short Exit')   # Cyan for short exit
+
+        # Optionally plot indicators from signals_df if they exist, using portfolio index
+        indicator_cols = [col for col in result['signals'].columns if col not in ['long_entries', 'long_exits', 'short_entries', 'short_exits', 'Close']] # Exclude 'Close' if it somehow exists
+        for col in indicator_cols:
+            ax1.plot(result['portfolio'].close.index, result['signals'][col], label=col, linestyle='--')
         
         ax1.set_ylabel('Price')
-        ax1.set_title(f'{symbol} - {strategy_name} Backtest Results')
+        ax1.set_title(f'{symbol} - {strategy_name} Backtest')
         ax1.legend()
         ax1.grid(True)
         
-        ax2 = axes[1]
-        if 'equity_curve' in result and result['equity_curve'] is not None:
-            result['equity_curve'].plot(ax=ax2, label='Equity Curve')
-        ax2.set_ylabel('Portfolio Value')
+        # 2. 累積リターン
+        equity_curve = result['equity_curve']
+        equity_curve.plot(ax=ax2, label='Equity Curve')
+        ax2.set_ylabel('Equity')
         ax2.legend()
         ax2.grid(True)
-        
-        ax3 = axes[2]
-        if 'drawdown' in result and result['drawdown'] is not None:
-            result['drawdown'].plot(ax=ax3, label='Drawdown', color='red')
-        ax3.set_ylabel('Drawdown %')
-        ax3.set_xlabel('Date')
-        ax3.legend()
-        ax3.grid(True)
         
         plt.tight_layout()
         
