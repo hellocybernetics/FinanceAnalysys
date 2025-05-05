@@ -1,0 +1,31 @@
+data:
+  symbols:
+    - AAPL
+    - MSFT
+    - GOOGL
+  period: 1y
+  interval: 1d
+
+strategies:
+  - name: MA_Crossover
+    params:
+      short_window: 20
+      long_window: 50
+  - name: MA_Crossover
+    params:
+      short_window: 10
+      long_window: 30
+  - name: RSI
+    params:
+      rsi_period: 14
+      oversold: 30
+      overbought: 70
+
+backtest:
+  initial_capital: 10000
+  commission: 0.001
+
+visualization:
+  output_dir: output
+  figsize: [12, 10]
+  show_plots: false

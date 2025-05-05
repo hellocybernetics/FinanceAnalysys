@@ -5,11 +5,17 @@ Data fetcher module for retrieving financial data using vectorbt or yfinance.
 import os
 import pandas as pd
 import yfinance as yf
-import vectorbt as vbt
 from datetime import datetime, timedelta
 import glob
 import re
 import logging
+
+try:
+    import vectorbt as vbt
+    VECTORBT_AVAILABLE = True
+except ImportError:
+    VECTORBT_AVAILABLE = False
+    logging.warning("vectorbt not available, using yfinance for data fetching")
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +31,9 @@ class DataFetcher:
         Args:
             use_vectorbt (bool): Whether to use vectorbt for data fetching (True) or yfinance (False).
         """
-        self.use_vectorbt = use_vectorbt
+        self.use_vectorbt = use_vectorbt and VECTORBT_AVAILABLE
+        if use_vectorbt and not VECTORBT_AVAILABLE:
+            logger.warning("vectorbt requested but not available, falling back to yfinance")
         self.failed_symbols = []
         self.company_names = {}
     
@@ -196,7 +204,7 @@ class DataFetcher:
             logger.info("All data loaded from cache")
             return data
         
-        if self.use_vectorbt:
+        if self.use_vectorbt and VECTORBT_AVAILABLE:
             try:
                 logger.info(f"Fetching data for {symbols_to_fetch} using vectorbt")
                 vbt_data = vbt.YFData.download(symbols_to_fetch, period=period, interval=interval)
