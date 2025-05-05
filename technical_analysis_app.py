@@ -99,6 +99,8 @@ with col2:
 
 st.markdown("Analyze stock price data with technical indicators and visualize the results.")
 
+tab1, tab2 = st.tabs(["Technical Analysis", "Backtest"])
+
 with st.sidebar:
     st.header("Configuration")
     
@@ -174,6 +176,29 @@ with st.sidebar:
     fig_width = st.slider("Figure Width", min_value=8, max_value=20, value=12, step=1)
     fig_height = st.slider("Figure Height", min_value=6, max_value=16, value=8, step=1)
     
+    st.subheader("Backtest Settings")
+    run_backtest = st.checkbox("Enable Backtest", value=False)
+    
+    if run_backtest:
+        st.markdown("##### Strategy Selection")
+        strategy_type = st.selectbox(
+            "Strategy Type", 
+            ["Moving Average Crossover", "RSI Strategy"],
+            index=0
+        )
+        
+        if strategy_type == "Moving Average Crossover":
+            ma_short = st.slider("Short MA Length", min_value=5, max_value=50, value=20, step=1)
+            ma_long = st.slider("Long MA Length", min_value=10, max_value=200, value=50, step=5)
+        elif strategy_type == "RSI Strategy":
+            rsi_length = st.slider("RSI Length", min_value=5, max_value=30, value=14, step=1)
+            rsi_oversold = st.slider("Oversold Level", min_value=10, max_value=40, value=30, step=1)
+            rsi_overbought = st.slider("Overbought Level", min_value=60, max_value=90, value=70, step=1)
+        
+        st.markdown("##### Backtest Parameters")
+        initial_capital = st.number_input("Initial Capital", min_value=1000, max_value=1000000, value=10000, step=1000)
+        commission = st.number_input("Commission (%)", min_value=0.0, max_value=2.0, value=0.1, step=0.05) / 100
+    
     analyze_button = st.button("Analyze", type="primary", use_container_width=True)
 
 if analyze_button or 'data' in st.session_state:
@@ -190,9 +215,10 @@ if analyze_button or 'data' in st.session_state:
             st.error(f"Failed to fetch data for {symbol}. Please check the symbol and try again.")
             st.stop()
     
-    st.header(f"{st.session_state.symbol} - {st.session_state.company_name}")
-    
-    indicators = []
+    with tab1:
+        st.header(f"{st.session_state.symbol} - {st.session_state.company_name}")
+        
+        indicators = []
     
     if use_sma:
         indicators.append({"name": "SMA", "params": {"length": sma_length}})
@@ -262,6 +288,74 @@ if analyze_button or 'data' in st.session_state:
                 data=buf,
                 file_name=f"{symbol}_technical_analysis.png",
                 mime="image/png",
+            )
+
+    if run_backtest:
+        with tab2:
+            st.header(f"Backtest Results: {st.session_state.symbol} - {st.session_state.company_name}")
+            
+            from src.backtesting.engine import BacktestEngine
+            from src.backtesting.strategy import MovingAverageCrossoverStrategy, RSIStrategy
+            
+            engine = BacktestEngine(use_vectorbt=False)
+            
+            if strategy_type == "Moving Average Crossover":
+                strategy = MovingAverageCrossoverStrategy(
+                    short_window=ma_short,
+                    long_window=ma_long,
+                    name=f"MA_{ma_short}_{ma_long}"
+                )
+                st.write(f"Strategy: Moving Average Crossover (Short: {ma_short}, Long: {ma_long})")
+            else:  # RSI Strategy
+                strategy = RSIStrategy(
+                    rsi_period=rsi_length,
+                    oversold=rsi_oversold,
+                    overbought=rsi_overbought,
+                    name=f"RSI_{rsi_length}_{rsi_oversold}_{rsi_overbought}"
+                )
+                st.write(f"Strategy: RSI (Period: {rsi_length}, Oversold: {rsi_oversold}, Overbought: {rsi_overbought})")
+            
+            with st.spinner("Running backtest..."):
+                result = engine.run_backtest(
+                    strategy=strategy,
+                    data=st.session_state.data,
+                    initial_capital=initial_capital,
+                    commission=commission
+                )
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Return", f"{result['total_return']:.2%}")
+            with col2:
+                st.metric("Sharpe Ratio", f"{result['sharpe_ratio']:.2f}")
+            with col3:
+                st.metric("Max Drawdown", f"{result['max_drawdown']:.2%}")
+            with col4:
+                if result['win_rate'] is not None:
+                    st.metric("Win Rate", f"{result['win_rate']:.2%}")
+                else:
+                    st.metric("Win Rate", "N/A")
+            
+            st.subheader("Backtest Chart")
+            fig = engine.visualize_results(result, st.session_state.symbol, strategy.name)
+            st.pyplot(fig)
+            
+            st.subheader("Trade Details")
+            if hasattr(result['trades'], 'records') and len(result['trades'].records) > 0:
+                trades_df = result['trades'].records
+                st.dataframe(trades_df)
+            else:
+                st.info("No trades were executed during the backtest period.")
+            
+            st.subheader("Signal Data")
+            st.dataframe(result['signals'])
+            
+            csv = result['signals'].to_csv().encode('utf-8')
+            st.download_button(
+                label="Download Signals CSV",
+                data=csv,
+                file_name=f"{symbol}_{strategy.name}_signals.csv",
+                mime="text/csv",
             )
 
 else:
