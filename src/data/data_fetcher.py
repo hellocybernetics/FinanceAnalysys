@@ -208,33 +208,47 @@ class DataFetcher:
             try:
                 logger.info(f"Fetching data for {symbols_to_fetch} using vectorbt")
                 vbt_data = vbt.YFData.download(symbols_to_fetch, period=period, interval=interval)
+                full_df = vbt_data.get()
                 
-                for symbol in symbols_to_fetch:
-                    try:
-                        if len(symbols_to_fetch) > 1:
-                            symbol_data = vbt_data.select(symbol)
-                            df = symbol_data.to_pandas()
-                        else:
-                            df = vbt_data.to_pandas()
-                        
-                        if df is not None and not df.empty:
-                            data[symbol] = df
-                            logger.info(f"Successfully fetched data for {symbol} using vectorbt")
-                            self.get_company_name(symbol)
-                        else:
-                            logger.warning(f"No data found for {symbol} using vectorbt")
+                if full_df is not None and not full_df.empty:
+                    for symbol in symbols_to_fetch:
+                        try:
+                            if isinstance(full_df.columns, pd.MultiIndex):
+                                symbol_df = full_df[symbol]
+                            elif len(symbols_to_fetch) == 1 and symbol == symbols_to_fetch[0]:
+                                symbol_df = full_df
+                            else:
+                                logger.warning(f"Unexpected DataFrame structure when processing {symbol}")
+                                self.failed_symbols.append(symbol)
+                                continue
+                                
+                            if symbol_df is not None and not symbol_df.empty:
+                                data[symbol] = symbol_df
+                                logger.info(f"Successfully processed data for {symbol} using vectorbt")
+                                self.get_company_name(symbol)
+                            else:
+                                logger.warning(f"No data extracted for {symbol} from vectorbt result")
+                                self.failed_symbols.append(symbol)
+                        except KeyError:
+                            logger.error(f"Symbol {symbol} not found in vectorbt results.")
                             self.failed_symbols.append(symbol)
-                    except Exception as e:
-                        logger.error(f"Error processing {symbol} data from vectorbt: {e}")
-                        self.failed_symbols.append(symbol)
+                        except Exception as e:
+                            logger.error(f"Error processing {symbol} data from vectorbt result: {e}")
+                            self.failed_symbols.append(symbol)
+                else:
+                    logger.warning(f"No data returned by vectorbt.YFData.get() for symbols: {symbols_to_fetch}")
+                    self.failed_symbols.extend(symbols_to_fetch)
+
             except Exception as e:
-                logger.error(f"Error fetching data with vectorbt: {e}")
+                logger.error(f"Error fetching or processing data with vectorbt: {e}")
                 logger.info("Falling back to yfinance...")
                 self.use_vectorbt = False
+                symbols_to_fetch_yf = [s for s in symbols_to_fetch if s not in data and s not in self.failed_symbols]
+                symbols_to_fetch = symbols_to_fetch_yf
         
-        if not self.use_vectorbt:
+        if not self.use_vectorbt or (self.use_vectorbt and symbols_to_fetch):
             for symbol in symbols_to_fetch:
-                if symbol in data:  # Skip if already fetched by vectorbt
+                if symbol in data:
                     continue
                     
                 try:

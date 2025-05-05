@@ -8,13 +8,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import logging
 import os
-
-try:
-    import vectorbt as vbt
-    VECTORBT_AVAILABLE = True
-except ImportError:
-    VECTORBT_AVAILABLE = False
-    logging.warning("vectorbt not available, using simplified backtesting engine")
+import vectorbt as vbt
 
 from ..data.data_fetcher import DataFetcher
 from .strategy import Strategy
@@ -32,10 +26,10 @@ class BacktestEngine:
         バックテストエンジンを初期化する
         
         Args:
-            use_vectorbt (bool): データ取得にvectorbtを使用するかどうか
+            use_vectorbt (bool): データ取得にvectorbtを使用するかどうか (現在は常にTrueとして扱われます)
         """
-        self.data_fetcher = DataFetcher(use_vectorbt=use_vectorbt)
-        logger.info(f"BacktestEngine initialized with use_vectorbt={use_vectorbt}")
+        self.data_fetcher = DataFetcher(use_vectorbt=True)
+        logger.info("BacktestEngine initialized (using vectorbt)")
     
     def fetch_data(self, symbols, period='1y', interval='1d'):
         """
@@ -69,138 +63,52 @@ class BacktestEngine:
         
         logger.info(f"Running backtest with strategy '{strategy.name}'")
         
+        # --- Frequency Handling ---
+        inferred_freq = pd.infer_freq(data.index)
+        if inferred_freq:
+            freq_to_use = inferred_freq
+            logger.info(f"Inferred data frequency: {freq_to_use}")
+        else:
+            freq_to_use = 'D' # Default to daily if inference fails
+            logger.warning("Could not infer data frequency. Assuming daily ('D').")
+        # --- End Frequency Handling ---
+        
         signals = strategy.generate_signals(data)
         
         positions = strategy.calculate_position_size(data, signals, initial_capital)
         
-        if VECTORBT_AVAILABLE:
-            if signals is None or 'signal' not in signals.columns:
-                logger.error("Invalid signals data: signal column not found")
-                portfolio = vbt.Portfolio.from_holding(
-                    data['Close'], 
-                    init_cash=initial_capital,
-                    fees=commission,
-                    freq=data.index.inferred_freq
-                )
-            else:
-                portfolio = vbt.Portfolio.from_signals(
-                    data['Close'],
-                    entries=signals['signal'] > 0,
-                    exits=signals['signal'] < 0,
-                    init_cash=initial_capital,
-                    fees=commission,
-                    freq=data.index.inferred_freq
-                )
-            
-            stats = portfolio.stats()
-            
-            available_stats = stats.index.tolist()
-            
-            total_return_key = 'total_return' if 'total_return' in available_stats else 'return'
-            sharpe_ratio_key = 'sharpe_ratio' if 'sharpe_ratio' in available_stats else 'sharpe_ratio'
-            max_drawdown_key = 'max_drawdown' if 'max_drawdown' in available_stats else 'max_dd'
-            win_rate_key = 'win_rate' if 'win_rate' in available_stats else None
-            
-            result = {
-                'portfolio': portfolio,
-                'stats': stats,
-                'signals': signals,
-                'equity_curve': portfolio.value(),  # Using value() instead of equity attribute
-                'drawdown': portfolio.drawdown(),
-                'trades': portfolio.trades,
-                'total_return': stats[total_return_key] if total_return_key in available_stats else 0.0,
-                'sharpe_ratio': stats[sharpe_ratio_key] if sharpe_ratio_key in available_stats else 0.0,
-                'max_drawdown': stats[max_drawdown_key] if max_drawdown_key in available_stats else 0.0,
-                'win_rate': stats[win_rate_key] if win_rate_key in available_stats and win_rate_key is not None else None
-            }
+        if signals is None or 'signal' not in signals.columns:
+            logger.error("Invalid signals data: signal column not found")
+            portfolio = vbt.Portfolio.from_holding(
+                data['Close'], 
+                init_cash=initial_capital,
+                fees=commission,
+                freq=freq_to_use # Use inferred/default frequency
+            )
         else:
-            logger.info("Using simplified backtesting engine without vectorbt")
-            
-            portfolio_values = []
-            cash = initial_capital
-            position = 0
-            trades = []
-            
-            for i in range(len(data)):
-                date = data.index[i]
-                price = data['Close'].iloc[i]
-                
-                if i > 0 and signals is not None and 'signal' in signals.columns:
-                    signal = signals['signal'].iloc[i]
-                    prev_signal = signals['signal'].iloc[i-1]
-                    
-                    if signal > 0 and prev_signal <= 0:
-                        shares_to_buy = cash / (price * (1 + commission))
-                        position += shares_to_buy
-                        cash -= shares_to_buy * price * (1 + commission)
-                        trades.append({
-                            'date': date,
-                            'type': 'buy',
-                            'price': price,
-                            'shares': shares_to_buy,
-                            'value': shares_to_buy * price
-                        })
-                    
-                    elif signal < 0 and prev_signal >= 0 and position > 0:
-                        cash += position * price * (1 - commission)
-                        trades.append({
-                            'date': date,
-                            'type': 'sell',
-                            'price': price,
-                            'shares': position,
-                            'value': position * price
-                        })
-                        position = 0
-                
-                portfolio_value = cash + (position * price)
-                portfolio_values.append(portfolio_value)
-            
-            equity_curve = pd.Series(portfolio_values, index=data.index)
-            
-            peak = equity_curve.expanding().max()
-            drawdown = (equity_curve - peak) / peak
-            
-            total_return = (portfolio_values[-1] / initial_capital) - 1
-            
-            returns = equity_curve.pct_change().dropna()
-            sharpe_ratio = returns.mean() / returns.std() * (252 ** 0.5) if len(returns) > 0 and returns.std() > 0 else 0
-            
-            max_drawdown = drawdown.min()
-            
-            if len(trades) > 1:
-                buy_trades = [t for t in trades if t['type'] == 'buy']
-                sell_trades = [t for t in trades if t['type'] == 'sell']
-                
-                if len(buy_trades) > 0 and len(sell_trades) > 0:
-                    wins = sum(1 for i in range(min(len(buy_trades), len(sell_trades))) 
-                              if sell_trades[i]['price'] > buy_trades[i]['price'])
-                    win_rate = wins / min(len(buy_trades), len(sell_trades))
-                else:
-                    win_rate = None
-            else:
-                win_rate = None
-            
-            trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
-            
-            stats = pd.Series({
-                'total_return': total_return,
-                'sharpe_ratio': sharpe_ratio,
-                'max_drawdown': max_drawdown,
-                'win_rate': win_rate
-            })
-            
-            result = {
-                'portfolio': None,  # No portfolio object without vectorbt
-                'stats': stats,
-                'signals': signals,
-                'equity_curve': equity_curve,
-                'drawdown': drawdown,
-                'trades': trades_df,
-                'total_return': total_return,
-                'sharpe_ratio': sharpe_ratio,
-                'max_drawdown': max_drawdown,
-                'win_rate': win_rate
-            }
+            portfolio = vbt.Portfolio.from_signals(
+                data['Close'],
+                entries=signals['signal'] > 0,
+                exits=signals['signal'] < 0,
+                init_cash=initial_capital,
+                fees=commission,
+                freq=freq_to_use # Use inferred/default frequency
+            )
+        
+        stats = portfolio.stats()
+        
+        result = {
+            'portfolio': portfolio,
+            'stats': stats,
+            'signals': signals,
+            'equity_curve': portfolio.value(),
+            'drawdown': portfolio.drawdown(),
+            'trades': portfolio.trades,
+            'total_return': stats.get('Total Return [%]', 0.0) / 100.0,
+            'sharpe_ratio': stats.get('Sharpe Ratio', 0.0),
+            'max_drawdown': stats.get('Max Drawdown [%]', 0.0) / 100.0,
+            'win_rate': stats.get('Win Rate [%]', None) / 100.0 if stats.get('Win Rate [%]') is not None else None,
+        }
         
         logger.info(f"Backtest completed with total return: {result['total_return']:.2%}")
         return result
@@ -292,7 +200,14 @@ class BacktestEngine:
         
         if 'stats' in result and result['stats'] is not None:
             stats_path = os.path.join(output_dir, f"{clean_symbol}_{strategy_name}_stats_{timestamp}.csv")
-            pd.Series(result['stats']).to_csv(stats_path)
+            if isinstance(result['stats'], (pd.Series, pd.DataFrame)):
+                 result['stats'].to_csv(stats_path)
+            else:
+                 try:
+                     pd.Series(result['stats']).to_csv(stats_path)
+                 except Exception as e:
+                     logger.warning(f"Could not save stats to CSV: {e}")
+
             result_paths['stats'] = stats_path
         
         fig = self.visualize_results(result, symbol, strategy_name)
@@ -301,9 +216,11 @@ class BacktestEngine:
         plt.close(fig)
         result_paths['chart'] = chart_path
         
-        if 'trades' in result and result['trades'] is not None and not result['trades'].empty:
+        if 'trades' in result and result['trades'] is not None and len(result['trades']) > 0:
             trades_path = os.path.join(output_dir, f"{clean_symbol}_{strategy_name}_trades_{timestamp}.csv")
-            result['trades'].to_csv(trades_path)
+            trades_records = result['trades'].records
+            trades_df = pd.DataFrame(trades_records)
+            trades_df.to_csv(trades_path)
             result_paths['trades'] = trades_path
         
         logger.info(f"Backtest results saved to {output_dir}")

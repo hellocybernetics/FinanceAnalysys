@@ -89,9 +89,9 @@ class MovingAverageCrossoverStrategy(Strategy):
         signals[f'SMA_{self.short_window}'] = signals['Close'].rolling(window=self.short_window).mean()
         signals[f'SMA_{self.long_window}'] = signals['Close'].rolling(window=self.long_window).mean()
         
-        signals['signal'] = np.where(signals[f'SMA_{self.short_window}'] > signals[f'SMA_{self.long_window}'], 1, 0)
-        
-        signals['position'] = signals['signal'].diff()
+        signals['signal'] = 0 # Default to 0
+        signals.loc[signals[f'SMA_{self.short_window}'] > signals[f'SMA_{self.long_window}'], 'signal'] = 1  # Buy signal
+        signals.loc[signals[f'SMA_{self.short_window}'] < signals[f'SMA_{self.long_window}'], 'signal'] = -1 # Sell signal
         
         return signals
 

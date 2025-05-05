@@ -56,4 +56,7 @@ lean/
 *.sqlite3
 
 # Credentials
-credentials/ 
+credentials/
+
+# デバッグ用フォルダを無視
+debugging/ 
