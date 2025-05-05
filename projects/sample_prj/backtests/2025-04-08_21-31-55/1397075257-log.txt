@@ -1,4 +1,0 @@
-2013-10-07 00:00:00 Launching analysis for 1397075257 with LEAN Engine v2.5.0.0
-2013-10-07 00:00:00 Accurate daily end-times now enabled by default. See more at https://qnt.co/3YHaWHL. To disable it and use legacy daily bars set self.settings.daily_precise_end_time = False.
-2013-10-07 09:31:00 Purchased Stock
-2013-10-11 16:00:00 Algorithm Id:(1397075257) completed in 0.48 seconds at 8k data points per second. Processing total of 3,943 data points.
