@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
 import logging
+from src.analysis.technical_indicators import TechnicalAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -144,3 +145,94 @@ class RSIStrategy(Strategy):
         signals['position'] = signals['signal'].diff()
         
         return signals
+
+class GenericUserStrategy(Strategy):
+    """
+    A generic strategy that generates signals based on user-defined rules
+    and technical indicators.
+    """
+
+    def __init__(self, strategy_config, name="GenericUserStrategy"):
+        """
+        Initializes the GenericUserStrategy.
+
+        Args:
+            strategy_config (dict): A dictionary containing the strategy's configuration.
+                Expected keys:
+                'indicators' (list): A list of indicator configurations, e.g.,
+                                     [{'name': 'SMA', 'params': {'length': 20}},
+                                      {'name': 'RSI', 'params': {'length': 14}}]
+                'buy_condition' (str): A string representing the buy condition, e.g.,
+                                       "SMA_20 > Close AND RSI_14 < 30"
+                'sell_condition' (str): A string representing the sell condition, e.g.,
+                                        "SMA_20 < Close OR RSI_14 > 70"
+            name (str): The name of the strategy.
+        """
+        super().__init__(name=name) # Pass the name to the superclass
+        self.indicators_config = strategy_config.get('indicators', [])
+        self.buy_condition_str = strategy_config.get('buy_condition', 'False') 
+        self.sell_condition_str = strategy_config.get('sell_condition', 'False')
+        self.technical_analyzer = TechnicalAnalysis()
+        self.evaluation_error = None  # Initialize error storage
+        # Ensure logger is accessible, e.g. module-level logger
+        logger.info(f"GenericUserStrategy '{self.name}' initialized with buy: '{self.buy_condition_str}', sell: '{self.sell_condition_str}'")
+
+    def generate_signals(self, data):
+        """
+        Generates trading signals based on the configured indicators and conditions.
+
+        Args:
+            data (pd.DataFrame): OHLCV price data.
+
+        Returns:
+            pd.DataFrame: DataFrame with a 'signal' column (1=buy, -1=sell, 0=hold).
+        """
+        # Reset error at the beginning of signal generation
+        self.evaluation_error = None
+
+        if data.empty:
+            logger.warning(f"Strategy '{self.name}': Input data is empty. Cannot generate signals.")
+            signals_df = pd.DataFrame(index=data.index)
+            signals_df['signal'] = 0
+            return signals_df[['signal']]
+
+        signals_df = data.copy()
+        
+        try:
+            signals_df = self.technical_analyzer.calculate_indicators(signals_df, self.indicators_config)
+        except Exception as e:
+            logger.error(f"Strategy '{self.name}': Error calculating technical indicators: {e}", exc_info=True)
+            signals_df['signal'] = 0
+            return signals_df[['signal']]
+
+        signals_df['signal'] = 0 # Initialize signal column
+
+        try:
+            if self.buy_condition_str and self.buy_condition_str.strip():
+                buy_signals_mask = pd.eval(self.buy_condition_str, engine='python', local_dict=signals_df)
+                signals_df.loc[buy_signals_mask, 'signal'] = 1
+            else:
+                logger.info(f"Strategy '{self.name}': Buy condition is empty or not a valid string. No buy signals generated.")
+        except Exception as e:
+            logger.error(f"Strategy '{self.name}': Error evaluating buy condition '{self.buy_condition_str}': {e}", exc_info=True)
+            self.evaluation_error = f"Error in buy condition '{self.buy_condition_str[:50]}...': {e}"
+
+        try:
+            if self.sell_condition_str and self.sell_condition_str.strip():
+                sell_signals_mask = pd.eval(self.sell_condition_str, engine='python', local_dict=signals_df)
+                signals_df.loc[sell_signals_mask, 'signal'] = np.where(signals_df.loc[sell_signals_mask, 'signal'] == 1, -1, -1) # If buy and sell on same bar, sell wins.
+            else:
+                logger.info(f"Strategy '{self.name}': Sell condition is empty or not a valid string. No sell signals generated.")
+        except Exception as e:
+            logger.error(f"Strategy '{self.name}': Error evaluating sell condition '{self.sell_condition_str}': {e}", exc_info=True)
+            error_message = f"Error in sell condition '{self.sell_condition_str[:50]}...': {e}"
+            if self.evaluation_error is None:
+                self.evaluation_error = error_message
+            else:
+                self.evaluation_error += f"; {error_message}" # Append if there was also a buy error
+            
+        signals_df['signal'] = signals_df['signal'].astype(int)
+        
+        logger.info(f"Strategy '{self.name}': Signals generated. Buys: {(signals_df['signal'] == 1).sum()}, Sells: {(signals_df['signal'] == -1).sum()}")
+        
+        return signals_df[['signal']]

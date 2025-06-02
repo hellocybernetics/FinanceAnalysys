@@ -191,9 +191,132 @@ with st.sidebar:
             ma_short = st.slider("Short MA Length", min_value=5, max_value=50, value=20, step=1)
             ma_long = st.slider("Long MA Length", min_value=10, max_value=200, value=50, step=5)
         elif strategy_type == "RSI Strategy":
-            rsi_length = st.slider("RSI Length", min_value=5, max_value=30, value=14, step=1)
+            # Use a different key for the backtest RSI length to avoid conflict with main chart RSI
+            backtest_rsi_length_val = st.slider("RSI Length", min_value=5, max_value=30, value=st.session_state.get('backtest_rsi_length_val', 14), step=1, key="backtest_rsi_length")
             rsi_oversold = st.slider("Oversold Level", min_value=10, max_value=40, value=30, step=1)
             rsi_overbought = st.slider("Overbought Level", min_value=60, max_value=90, value=70, step=1)
+            # Store for potential use if main chart RSI length differs
+            st.session_state.backtest_rsi_length_val = backtest_rsi_length_val
+            st.session_state.rsi_oversold_val = rsi_oversold
+            st.session_state.rsi_overbought_val = rsi_overbought
+
+        st.markdown("---") # Separator
+        st.markdown("##### Build Custom Strategy")
+        # Ensure use_custom_strategy is initialized in session_state if not present
+        if 'use_custom_strategy' not in st.session_state:
+            st.session_state.use_custom_strategy = False
+        
+        # Update session state based on checkbox
+        st.session_state.use_custom_strategy = st.checkbox(
+            "Enable Custom Strategy Builder", 
+            value=st.session_state.use_custom_strategy, 
+            key="use_custom_strategy_cb"
+        )
+
+        # Initialize or retrieve custom_strategy_config from session_state
+        if 'custom_strategy_config' not in st.session_state:
+            st.session_state.custom_strategy_config = {
+                "name": "MyCustomStrategy",
+                "selected_indicators": [],
+                "indicators_params": {},
+                "indicators": [],
+                "buy_condition": "SMA_20 > Close AND RSI_14 < 30",
+                "sell_condition": "SMA_20 < Close OR RSI_14 > 70"
+            }
+
+        if st.session_state.use_custom_strategy:
+            custom_strategy_name = st.text_input(
+                "Custom Strategy Name", 
+                value=st.session_state.custom_strategy_config.get("name", "MyCustomStrategy"),
+                help="Enter a name for your custom strategy."
+            )
+            st.session_state.custom_strategy_config['name'] = custom_strategy_name
+
+            st.markdown("###### Indicators for Custom Strategy")
+            available_indicators = {
+                "SMA": {"length": 20}, "EMA": {"length": 50}, "RSI": {"length": 14},
+                "MACD": {"fast": 12, "slow": 26, "signal": 9},
+                "BBands": {"length": 20, "std": 2}, "ATR": {"length": 14},
+                "Stochastic": {"k": 14, "d": 3}, "ADX": {"length": 14}, "WILLR": {"length": 14}
+            }
+
+            selected_indicator_types = st.multiselect(
+                "Select Indicators", options=list(available_indicators.keys()),
+                default=st.session_state.custom_strategy_config.get("selected_indicators", []),
+                help="Choose indicators to use in your strategy.", key="custom_indicator_multiselect"
+            )
+            st.session_state.custom_strategy_config["selected_indicators"] = selected_indicator_types
+
+            custom_indicators_params = []
+            # Ensure indicators_params is a dict in session state
+            if 'indicators_params' not in st.session_state.custom_strategy_config or not isinstance(st.session_state.custom_strategy_config['indicators_params'], dict):
+                st.session_state.custom_strategy_config['indicators_params'] = {}
+
+            for ind_type in selected_indicator_types:
+                st.markdown(f"**Parameters for {ind_type}**")
+                # Get current params for this ind_type from session_state, or default if not found
+                current_params_for_ind = st.session_state.custom_strategy_config['indicators_params'].get(ind_type, available_indicators[ind_type])
+                
+                params = {} # To store the updated params from widgets
+                if ind_type in ["SMA", "EMA", "RSI", "ATR", "ADX", "WILLR"]:
+                    params['length'] = st.slider(f"{ind_type} Length", 1, 200, current_params_for_ind.get('length', available_indicators[ind_type]['length']), key=f"custom_{ind_type}_length")
+                elif ind_type == "MACD":
+                    params['fast'] = st.slider(f"{ind_type} Fast Length", 1, 50, current_params_for_ind.get('fast',available_indicators[ind_type]['fast']), key=f"custom_{ind_type}_fast")
+                    params['slow'] = st.slider(f"{ind_type} Slow Length", 1, 100, current_params_for_ind.get('slow',available_indicators[ind_type]['slow']), key=f"custom_{ind_type}_slow")
+                    params['signal'] = st.slider(f"{ind_type} Signal Length", 1, 50, current_params_for_ind.get('signal',available_indicators[ind_type]['signal']), key=f"custom_{ind_type}_signal")
+                elif ind_type == "BBands":
+                    params['length'] = st.slider(f"{ind_type} BBands Length", 1, 100, current_params_for_ind.get('length',available_indicators[ind_type]['length']), key=f"custom_{ind_type}_bband_length") 
+                    params['std'] = st.slider(f"{ind_type} Std Dev", 1.0, 4.0, float(current_params_for_ind.get('std',available_indicators[ind_type]['std'])), step=0.1, key=f"custom_{ind_type}_std")
+                elif ind_type == "Stochastic":
+                    params['k'] = st.slider(f"{ind_type} %K Length", 1, 50, current_params_for_ind.get('k',available_indicators[ind_type]['k']), key=f"custom_{ind_type}_k")
+                    params['d'] = st.slider(f"{ind_type} %D Length", 1, 50, current_params_for_ind.get('d',available_indicators[ind_type]['d']), key=f"custom_{ind_type}_d")
+                
+                custom_indicators_params.append({'name': ind_type, 'params': params})
+                # Store/update individual indicator params in session state
+                st.session_state.custom_strategy_config['indicators_params'][ind_type] = params
+            
+            st.session_state.custom_strategy_config['indicators'] = custom_indicators_params
+
+            st.markdown("###### Custom Strategy Rules")
+            buy_condition_help_text = """
+Define buy rule using OHLCV data and calculated indicators.
+Available OHLCV columns: Open, High, Low, Close, Volume.
+Indicator columns are named based on type and parameters, e.g.:
+- SMA_20, EMA_50 (replace numbers with your chosen lengths)
+- RSI_14
+- MACD_12_26 (MACD line), MACD_Signal_9 (Signal line), MACD_Hist_12_26_9
+- BBU_20_2 (Upper BB), BBM_20_2 (Middle BB), BBL_20_2 (Lower BB)
+- ATR_14, STOCHk_14_3, STOCHd_14_3, ADX_14, WILLR_14
+
+Use standard comparison (>, <, ==, etc.) and logical operators (AND, OR, NOT).
+Example: (Close > SMA_50) AND (MACD_12_26 > MACD_Signal_9) AND (RSI_14 < 30)
+Ensure indicator parameters in rules match your selections above.
+            """
+            buy_condition = st.text_area(
+                "Buy Condition", 
+                value=st.session_state.custom_strategy_config.get("buy_condition", "SMA_20 > Close AND RSI_14 < 30"),
+                height=100, 
+                help=buy_condition_help_text, 
+                key="custom_buy_condition"
+            )
+            st.session_state.custom_strategy_config['buy_condition'] = buy_condition
+
+            sell_condition_help_text = """
+Define sell rule using OHLCV data and calculated indicators.
+Available OHLCV columns: Open, High, Low, Close, Volume.
+Indicator columns are named based on type and parameters (see examples in Buy Condition help).
+Example: (Close < SMA_50) OR (RSI_14 > 70) OR (Close < BBL_20_2)
+Use standard comparison (>, <, ==, etc.) and logical operators (AND, OR, NOT).
+Ensure indicator parameters in rules match your selections above.
+            """
+            sell_condition = st.text_area(
+                "Sell Condition", 
+                value=st.session_state.custom_strategy_config.get("sell_condition", "SMA_20 < Close OR RSI_14 > 70"),
+                height=100, 
+                help=sell_condition_help_text, 
+                key="custom_sell_condition"
+            )
+            st.session_state.custom_strategy_config['sell_condition'] = sell_condition
         
         st.markdown("##### Backtest Parameters")
         initial_capital = st.number_input("Initial Capital", min_value=1000, max_value=1000000, value=10000, step=1000)
@@ -227,7 +350,11 @@ if analyze_button or 'data' in st.session_state:
         indicators.append({"name": "EMA", "params": {"length": ema_length}})
     
     if use_rsi:
-        indicators.append({"name": "RSI", "params": {"length": rsi_length}})
+        # Use the main chart RSI length unless backtest RSI strategy is active and has a different value
+        current_rsi_length = rsi_length 
+        if run_backtest and strategy_type == 'RSI Strategy' and 'backtest_rsi_length_val' in st.session_state:
+            current_rsi_length = st.session_state.backtest_rsi_length_val
+        indicators.append({"name": "RSI", "params": {"length": current_rsi_length}})
     
     if use_macd:
         indicators.append({"name": "MACD", "params": {"fast": macd_fast, "slow": macd_slow, "signal": macd_signal}})
@@ -295,68 +422,127 @@ if analyze_button or 'data' in st.session_state:
             st.header(f"Backtest Results: {st.session_state.symbol} - {st.session_state.company_name}")
             
             from src.backtesting.engine import BacktestEngine
-            from src.backtesting.strategy import MovingAverageCrossoverStrategy, RSIStrategy
+            from src.backtesting.strategy import MovingAverageCrossoverStrategy, RSIStrategy, GenericUserStrategy # Added GenericUserStrategy
             
             engine = BacktestEngine(use_vectorbt=False)
-            
+            strategies_to_run = []
+
+            # Prepare predefined strategy (if selected and backtesting is enabled)
+            # Note: strategy_type, ma_short, ma_long are available from the sidebar scope
             if strategy_type == "Moving Average Crossover":
-                strategy = MovingAverageCrossoverStrategy(
-                    short_window=ma_short,
-                    long_window=ma_long,
-                    name=f"MA_{ma_short}_{ma_long}"
+                predefined_strategy = MovingAverageCrossoverStrategy(
+                    short_window=ma_short, # Direct variable from sidebar
+                    long_window=ma_long,   # Direct variable from sidebar
+                    name=f"MA_Crossover_{ma_short}_{ma_long}"
                 )
-                st.write(f"Strategy: Moving Average Crossover (Short: {ma_short}, Long: {ma_long})")
-            else:  # RSI Strategy
-                strategy = RSIStrategy(
-                    rsi_period=rsi_length,
-                    oversold=rsi_oversold,
-                    overbought=rsi_overbought,
-                    name=f"RSI_{rsi_length}_{rsi_oversold}_{rsi_overbought}"
+                strategies_to_run.append(predefined_strategy)
+            elif strategy_type == "RSI Strategy":
+                predefined_strategy = RSIStrategy(
+                    rsi_period=st.session_state.backtest_rsi_length_val, # From session_state
+                    oversold=st.session_state.rsi_oversold_val,         # From session_state
+                    overbought=st.session_state.rsi_overbought_val,     # From session_state
+                    name=f"RSI_{st.session_state.backtest_rsi_length_val}_{st.session_state.rsi_oversold_val}_{st.session_state.rsi_overbought_val}"
                 )
-                st.write(f"Strategy: RSI (Period: {rsi_length}, Oversold: {rsi_oversold}, Overbought: {rsi_overbought})")
-            
-            with st.spinner("Running backtest..."):
-                result = engine.run_backtest(
-                    strategy=strategy,
-                    data=st.session_state.data,
-                    initial_capital=initial_capital,
-                    commission=commission
-                )
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Return", f"{result['total_return']:.2%}")
-            with col2:
-                st.metric("Sharpe Ratio", f"{result['sharpe_ratio']:.2f}")
-            with col3:
-                st.metric("Max Drawdown", f"{result['max_drawdown']:.2%}")
-            with col4:
-                if result['win_rate'] is not None:
-                    st.metric("Win Rate", f"{result['win_rate']:.2%}")
+                strategies_to_run.append(predefined_strategy)
+
+            # Prepare custom strategy (if enabled and configured)
+            if st.session_state.get('use_custom_strategy', False):
+                custom_config = st.session_state.get('custom_strategy_config', {})
+                if custom_config.get('buy_condition') and custom_config.get('sell_condition') and custom_config.get('name') and custom_config.get('indicators') is not None:
+                    # 'indicators' should be a list of dicts like [{'name': 'SMA', 'params': {'length': 20}}, ...]
+                    # This is already correctly stored in st.session_state.custom_strategy_config['indicators']
+                    strategy_details_for_generic = {
+                        'indicators': custom_config.get('indicators', []),
+                        'buy_condition': custom_config.get('buy_condition'),
+                        'sell_condition': custom_config.get('sell_condition')
+                    }
+                    custom_strategy_obj = GenericUserStrategy(
+                        strategy_config=strategy_details_for_generic,
+                        name=custom_config['name']
+                    )
+                    strategies_to_run.append(custom_strategy_obj)
                 else:
-                    st.metric("Win Rate", "N/A")
-            
-            st.subheader("Backtest Chart")
-            fig = engine.visualize_results(result, st.session_state.symbol, strategy.name)
-            st.pyplot(fig)
-            
-            st.subheader("Trade Details")
-            if hasattr(result['trades'], 'records') and len(result['trades'].records) > 0:
-                trades_df = result['trades'].records
-                st.dataframe(trades_df)
+                    st.warning(f"Custom strategy '{custom_config.get('name', 'Unnamed')}' is enabled but not fully configured (missing rules or indicators). It will not be run.")
+
+            if not strategies_to_run:
+                st.warning("No strategies selected or properly configured for backtesting.")
             else:
-                st.info("No trades were executed during the backtest period.")
-            
-            st.subheader("Signal Data")
-            st.dataframe(result['signals'])
-            
-            csv = result['signals'].to_csv().encode('utf-8')
-            st.download_button(
-                label="Download Signals CSV",
-                data=csv,
-                file_name=f"{symbol}_{strategy.name}_signals.csv",
-                mime="text/csv",
-            )
+                for strategy_obj in strategies_to_run:
+                    st.subheader(f"Results for: {strategy_obj.name}")
+                    if isinstance(strategy_obj, MovingAverageCrossoverStrategy):
+                        st.markdown(f"Strategy Type: Moving Average Crossover (Short: {strategy_obj.short_window}, Long: {strategy_obj.long_window})")
+                    elif isinstance(strategy_obj, RSIStrategy):
+                        st.markdown(f"Strategy Type: RSI (Period: {strategy_obj.rsi_period}, Oversold: {strategy_obj.oversold}, Overbought: {strategy_obj.overbought})")
+                    elif isinstance(strategy_obj, GenericUserStrategy):
+                        st.markdown(f"Strategy Type: Custom User Strategy")
+                        st.markdown(f"Buy Condition: `{strategy_obj.buy_condition_str}`")
+                        st.markdown(f"Sell Condition: `{strategy_obj.sell_condition_str}`")
+                        if strategy_obj.indicators_config:
+                            inds_summary = ", ".join([f"{ind['name']}({', '.join([f'{k}={v}' for k,v in ind.get('params', {}).items()])})" for ind in strategy_obj.indicators_config])
+                            st.markdown(f"Indicators: {inds_summary}")
+                    
+                    # Ensure data is available in session state
+                    if 'data' not in st.session_state or st.session_state.data.empty:
+                        st.error("No data available for backtesting. Please fetch data first from the 'Technical Analysis' tab or main settings.")
+                        continue # Skip to next strategy if data is missing
+
+                    # initial_capital and commission are direct variables from sidebar scope
+                    with st.spinner(f"Running backtest for {strategy_obj.name}..."):
+                        result = engine.run_backtest(
+                            strategy=strategy_obj,
+                            data=st.session_state.data,
+                            initial_capital=initial_capital, 
+                            commission=commission 
+                        )
+                    
+                    # Display evaluation error if any for GenericUserStrategy
+                    if isinstance(strategy_obj, GenericUserStrategy) and hasattr(strategy_obj, 'evaluation_error') and strategy_obj.evaluation_error:
+                        st.error(f"⚠️ Custom Strategy Rule Evaluation Error(s) for '{strategy_obj.name}':\n{strategy_obj.evaluation_error}")
+
+                    if result:
+                        res_col1, res_col2, res_col3, res_col4 = st.columns(4)
+                        with res_col1:
+                            st.metric("Total Return", f"{result.get('total_return', np.nan):.2%}")
+                        with res_col2:
+                            st.metric("Sharpe Ratio", f"{result.get('sharpe_ratio', np.nan):.2f}")
+                        with res_col3:
+                            st.metric("Max Drawdown", f"{result.get('max_drawdown', np.nan):.2%}")
+                        with res_col4:
+                            win_rate = result.get('win_rate', np.nan)
+                            st.metric("Win Rate", f"{win_rate:.2%}" if not pd.isna(win_rate) else "N/A")
+                        
+                        st.subheader("Backtest Chart")
+                        backtest_fig = engine.visualize_results(result, st.session_state.symbol, strategy_obj.name)
+                        if backtest_fig:
+                            st.pyplot(backtest_fig)
+                        else:
+                            st.warning("Could not generate the backtest plot.")
+                        
+                        st.subheader("Trade Details")
+                        trades_df = result.get('trades_df', pd.DataFrame()) # Assuming engine might return df directly
+                        if not trades_df.empty:
+                            st.dataframe(trades_df)
+                        else:
+                            st.info("No trades were executed during the backtest period for this strategy.")
+                        
+                        st.subheader("Signal Data")
+                        signals_df = result.get('signals', pd.DataFrame())
+                        if not signals_df.empty:
+                            st.dataframe(signals_df)
+                            csv_signals = signals_df.to_csv().encode('utf-8')
+                            st.download_button(
+                                label=f"Download Signals CSV for {strategy_obj.name}",
+                                data=csv_signals,
+                                file_name=f"{st.session_state.symbol}_{strategy_obj.name}_signals.csv",
+                                mime="text/csv",
+                                key=f"download_signals_{strategy_obj.name}" # Unique key for download button
+                            )
+                        else:
+                            st.info("No signal data to display for this strategy.")
+                    else:
+                        st.error(f"Backtest failed to produce results for strategy: {strategy_obj.name}")
+
+                    st.markdown("---") # Separator for next strategy
 
 else:
     st.info("Enter a stock symbol and select technical indicators in the sidebar, then click 'Analyze' to generate the analysis.")
