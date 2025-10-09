@@ -55,6 +55,9 @@ lean/
 *.db
 *.sqlite3
 
+# GitHub Pages build artifacts
+docs/static_site/
+
 # Credentials
 credentials/
 
