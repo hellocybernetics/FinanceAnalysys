@@ -97,6 +97,10 @@ FinanceAnalysisPy/
 uv sync
 ```
 
+> 💡 **Windows + uv の注意:** PowerShell で `uv` を利用する際に `.venv\lib64` に対するアクセス拒否エラーが出る場合は、
+> `set UV_LINK_MODE=copy` を実行してから `uv sync` や `uv run` を実行してください。リポジトリにはこの設定を自動で行う
+> `scripts/run_streamlit_uv.ps1` も用意しています。
+
 ### 分析実行
 
 ```bash
@@ -111,6 +115,11 @@ python scripts/run_analysis.py --use-vectorbt
 
 # 出力ディレクトリを指定
 python scripts/run_analysis.py --output-dir path/to/output
+```
+
+```powershell
+# Streamlit UI を uv ベースで起動 (Windows 推奨スクリプト)
+pwsh -File scripts/run_streamlit_uv.ps1
 ```
 
 ### 設定ファイルの例

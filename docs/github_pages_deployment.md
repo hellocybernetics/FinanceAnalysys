@@ -42,7 +42,23 @@ streamlit run technical_analysis_app.py
 uv run streamlit run technical_analysis_app.py
 ```
 
+> ⚠️ **Windows + uv tip:** If you see `アクセスが拒否されました (.venv\lib64)` while running the uv command, Windows is
+> blocking uv from recreating the `lib64` junction inside the project virtual environment. Run `set UV_LINK_MODE=copy`
+> in the same terminal (or use `scripts\run_streamlit_uv.ps1`, described below) before invoking `uv sync`/`uv run` to
+> force uv to copy files instead of creating symlinks.
+
 Open the provided local URL in your browser, exercise the single-symbol, multi-symbol, and backtesting flows, then stop the server (Ctrl+C) when finished.
+
+### Windows helper script
+
+The repository ships with `scripts/run_streamlit_uv.ps1`, which wraps the uv commands with the `UV_LINK_MODE=copy` workaround and
+skips redundant dependency syncs on every launch. From PowerShell run:
+
+```powershell
+pwsh -File scripts/run_streamlit_uv.ps1
+```
+
+You can pass a different entry point if needed (for example `-AppPath scripts/custom_app.py`).
 
 ## 3. Export a static build for GitHub Pages
 
