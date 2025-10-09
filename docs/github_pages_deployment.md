@@ -16,23 +16,30 @@ This guide walks through publishing the Streamlit-based technical analysis UI to
 git clone https://github.com/<your-account>/FinanceAnalysys.git
 cd FinanceAnalysys
 
-# Create and activate a virtual environment (example uses venv)
+# Option A: Create a virtual environment with venv
 python -m venv .venv
 source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
-
-# Install dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
+
+# Option B: Use uv for a faster, parallelized setup
+uv venv .venv
+source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
+uv sync
 ```
 
-> 💡 The repository also exposes a `poetry` configuration. If you prefer Poetry, run `poetry install` instead of using `pip`.
+> 💡 `uv sync` reads the dependency graph from `pyproject.toml` and installs packages in parallel, which is considerably faster than sequential `pip install` runs. The repository also exposes a `poetry` configuration if you prefer Poetry over `pip` or `uv`.
 
 ## 2. Verify the application locally
 
 Before exporting the site, confirm the UI behaves as expected:
 
 ```bash
+# Traditional activation flow
 streamlit run technical_analysis_app.py
+
+# Using uv directly without activating the virtual environment
+uv run streamlit run technical_analysis_app.py
 ```
 
 Open the provided local URL in your browser, exercise the single-symbol, multi-symbol, and backtesting flows, then stop the server (Ctrl+C) when finished.
@@ -84,6 +91,15 @@ GitHub Pages will publish the site at `https://<your-account>.github.io/FinanceA
 ## 7. Automate future exports (optional)
 
 To keep the static bundle fresh, you can automate the export step by adding a GitHub Actions workflow that runs `streamlit static export` on pushes to `main` or on demand. Commit the generated assets or configure the workflow to push the static files to the `gh-pages` branch.
+
+This repository already ships with `.github/workflows/deploy-pages.yml`, which:
+
+- Restores cached uv artifacts and the project virtual environment to avoid re-downloading wheels.
+- Uses `uv add --requirements requirements.txt` instead of `uv pip install` to resolve dependencies in parallel (faster in CI).
+- Runs `uv run streamlit static export technical_analysis_app.py --output docs/static_site` to rebuild the static bundle.
+- Publishes the exported assets to GitHub Pages using the official `actions/deploy-pages` integration.
+
+Fork owners can reuse this workflow verbatim or adjust the triggers to suit their release cadence.
 
 ---
 
