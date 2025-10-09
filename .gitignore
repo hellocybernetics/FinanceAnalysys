@@ -60,3 +60,6 @@ credentials/
 
 # デバッグ用フォルダを無視
 debugging/ 
+
+# LLM
+.claude
