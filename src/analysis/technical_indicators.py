@@ -63,11 +63,24 @@ class TechnicalAnalysis:
             rsi = vbt.RSI.run(result_df['Close'], window=length, short_name=f'RSI_{length}')
             result_df[f'RSI_{length}'] = rsi.rsi
         else:
-            # Calculate RSI using pandas
+            # Calculate RSI using pandas following Wilder's smoothing method
             delta = result_df['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=length).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=length).mean()
-            rs = gain / loss
+            gain = delta.where(delta > 0, 0.0)
+            loss = -delta.where(delta < 0, 0.0)
+
+            # Calculate initial averages
+            avg_gain = pd.Series(np.nan, index=result_df.index)
+            avg_loss = pd.Series(np.nan, index=result_df.index)
+
+            avg_gain.iloc[length] = gain.iloc[1:length+1].mean()
+            avg_loss.iloc[length] = loss.iloc[1:length+1].mean()
+
+            # Subsequently, use Wilder's smoothing
+            for i in range(length + 1, len(result_df)):
+                avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (length - 1) + gain.iloc[i]) / length
+                avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (length - 1) + loss.iloc[i]) / length
+
+            rs = avg_gain / avg_loss
             result_df[f'RSI_{length}'] = 100 - (100 / (1 + rs))
         logger.info(f"Calculated RSI with length {length}")
 
