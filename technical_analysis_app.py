@@ -17,6 +17,8 @@ import yfinance as yf
 from src.analysis.technical_indicators import TechnicalAnalysis
 from src.visualization.visualizer import Visualizer
 from src.data.data_fetcher import DataFetcher
+from src.backtesting.engine import BacktestEngine
+from src.backtesting.strategy import MovingAverageCrossoverStrategy, RSIStrategy
 
 st.set_page_config(
     page_title="Financial Technical Analysis",
@@ -735,45 +737,43 @@ with st.expander("Backtest Trading Strategies", expanded=False):
         run_backtest = st.button("Run Backtest", type="primary", key="run_backtest_btn")
 
         if run_backtest:
-            from src.backtesting.engine import BacktestEngine
-            from src.backtesting.strategy import (
-                MovingAverageCrossoverStrategy,
-                RSIStrategy,
-            )
-
-            engine = BacktestEngine(use_vectorbt=False)
-
-            if strategy_type == "Moving Average Crossover":
-                strategy = MovingAverageCrossoverStrategy(
-                    short_window=ma_short,
-                    long_window=ma_long,
-                    name=f"MA_{ma_short}_{ma_long}",
-                )
-                strategy_label = f"Moving Average Crossover (Short: {ma_short}, Long: {ma_long})"
-            else:
-                strategy = RSIStrategy(
-                    rsi_period=rsi_bt_length,
-                    oversold=rsi_oversold,
-                    overbought=rsi_overbought,
-                    name=f"RSI_{rsi_bt_length}_{rsi_oversold}_{rsi_overbought}",
-                )
-                strategy_label = (
-                    f"RSI Strategy (Period: {rsi_bt_length}, Oversold: {rsi_oversold}, Overbought: {rsi_overbought})"
-                )
-
             with st.spinner("Running backtest..."):
-                result = engine.run_backtest(
+                # Get data for primary symbol
+                primary_data = st.session_state.multi_data[symbol]
+
+                # Create strategy based on selected type
+                if strategy_type == "Moving Average Crossover":
+                    strategy = MovingAverageCrossoverStrategy(
+                        short_length=ma_short,
+                        long_length=ma_long
+                    )
+                    strategy_label = f"MA Crossover ({ma_short}/{ma_long})"
+                else:  # RSI Strategy
+                    strategy = RSIStrategy(
+                        rsi_length=rsi_bt_length,
+                        oversold=rsi_oversold,
+                        overbought=rsi_overbought
+                    )
+                    strategy_label = f"RSI ({rsi_bt_length}, {rsi_oversold}/{rsi_overbought})"
+
+                # Run backtest
+                engine = BacktestEngine(use_vectorbt=False)
+                result = engine.run(
+                    df=primary_data,
                     strategy=strategy,
-                    data=st.session_state.multi_data[symbol],
                     initial_capital=initial_capital,
                     commission=commission,
                 )
 
-            st.session_state.backtest_result = {
-                "result": result,
-                "strategy": strategy,
-                "strategy_label": strategy_label,
-            }
+                # Store results in session state
+                st.session_state.backtest_result = {
+                    "result": result,
+                    "strategy": strategy,
+                    "strategy_label": strategy_label,
+                    "figure": None,  # Will be generated on demand
+                }
+
+                st.success("Backtest completed!")
 
         if st.session_state.get("backtest_result"):
             stored_symbol = symbol
@@ -786,7 +786,7 @@ with st.expander("Backtest Trading Strategies", expanded=False):
             st.markdown(f"### Backtest Results: {stored_symbol} - {company_name}")
             st.write(f"Strategy: {strategy_label}")
 
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("Total Return", f"{result['total_return']:.2%}")
             with col2:
@@ -798,6 +798,14 @@ with st.expander("Backtest Trading Strategies", expanded=False):
                     st.metric("Win Rate", f"{result['win_rate']:.2%}")
                 else:
                     st.metric("Win Rate", "N/A")
+            with col5:
+                profit_factor = result.get("profit_factor", 0)
+                if profit_factor == np.inf:
+                    st.metric("Profit Factor", "∞")
+                elif profit_factor is not None:
+                    st.metric("Profit Factor", f"{profit_factor:.2f}")
+                else:
+                    st.metric("Profit Factor", "N/A")
 
             fig = result_payload.get("figure")
             if fig is None:
@@ -811,9 +819,8 @@ with st.expander("Backtest Trading Strategies", expanded=False):
 
             st.subheader("Trade Details")
             trades = result.get("trades")
-            if hasattr(trades, "records") and len(trades.records) > 0:
-                trades_df = trades.records
-                st.dataframe(trades_df)
+            if isinstance(trades, pd.DataFrame) and not trades.empty:
+                st.dataframe(trades)
             else:
                 st.info("No trades were executed during the backtest period.")
 

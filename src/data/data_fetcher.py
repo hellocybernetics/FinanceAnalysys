@@ -254,21 +254,56 @@ class DataFetcher:
                         for symbol in symbols_to_fetch:
                             try:
                                 symbol_df = None
+
                                 if isinstance(full_df.columns, pd.MultiIndex):
+                                    # Identify which level holds the symbol labels
+                                    symbol_level = None
+                                    for level_idx in range(full_df.columns.nlevels):
+                                        level_values = full_df.columns.get_level_values(level_idx)
+                                        if symbol in level_values:
+                                            symbol_level = level_idx
+                                            break
+
+                                    if symbol_level is not None:
+                                        extracted = full_df.xs(symbol, axis=1, level=symbol_level)
+                                        # xs can return a Series when only one column remains
+                                        if isinstance(extracted, pd.Series):
+                                            symbol_df = extracted.to_frame(name=extracted.name if extracted.name else 'Close')
+                                        else:
+                                            symbol_df = extracted
+                                    else:
+                                        logger.warning(
+                                            "Symbol %s not found in any MultiIndex level of vectorbt result", symbol
+                                        )
+                                elif symbol in full_df.columns:
+                                    # Single-level columns with symbols as labels
                                     symbol_df = full_df[symbol]
                                 elif len(symbols_to_fetch) == 1 and symbol == symbols_to_fetch[0]:
+                                    # vectorbt returns a single DataFrame when only one symbol requested
                                     symbol_df = full_df
                                 else:
                                     logger.warning(f"Unexpected DataFrame structure when processing {symbol}")
                                     self.failed_symbols.append(symbol)
                                     continue
-                                    
-                                if symbol_df is not None and isinstance(symbol_df, (pd.DataFrame, pd.Series)) and not symbol_df.empty:
-                                    data[symbol] = symbol_df
-                                    logger.info(f"Successfully processed data for {symbol} using vectorbt")
-                                    self.get_company_name(symbol)
+
+                                if symbol_df is not None:
+                                    if isinstance(symbol_df, pd.Series):
+                                        symbol_df = symbol_df.to_frame(name=symbol_df.name or 'Close')
+
+                                    # Flatten any remaining MultiIndex columns into simple strings
+                                    if isinstance(symbol_df.columns, pd.MultiIndex):
+                                        symbol_df.columns = ["_".join(map(str, col)).strip() for col in symbol_df.columns]
+                                    else:
+                                        symbol_df.columns = [str(col) for col in symbol_df.columns]
+
+                                    if not symbol_df.empty:
+                                        data[symbol] = symbol_df
+                                        logger.info(f"Successfully processed data for {symbol} using vectorbt")
+                                        self.get_company_name(symbol)
+                                    else:
+                                        logger.warning(f"No data extracted for {symbol} from vectorbt result")
+                                        self.failed_symbols.append(symbol)
                                 else:
-                                    logger.warning(f"No data extracted for {symbol} from vectorbt result")
                                     self.failed_symbols.append(symbol)
                             except KeyError:
                                 logger.error(f"Symbol {symbol} not found in vectorbt results.")

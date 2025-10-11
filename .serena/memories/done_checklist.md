@@ -1,0 +1,1 @@
+Before handing off changes: run `uv run pytest`; if analytics/backtest features touched, rerun `uv run python scripts/run_analysis.py` or `...run_backtest.py` with representative configs; update README/config docs when adding new scripts or options; ensure output/ artifacts are gitignored unless specifically needed.
