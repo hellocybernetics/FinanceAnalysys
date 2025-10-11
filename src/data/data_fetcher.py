@@ -9,15 +9,42 @@ from datetime import datetime, timedelta
 import glob
 import re
 import logging
+import functools
+import hashlib
 
 try:
     import vectorbt as vbt
     VECTORBT_AVAILABLE = True
 except ImportError:
     VECTORBT_AVAILABLE = False
+    vbt = None
     logging.warning("vectorbt not available, using yfinance for data fetching")
 
 logger = logging.getLogger(__name__)
+
+# Simple in-memory cache for computed results
+cache = {}
+
+def cache_result(func):
+    """Decorator to cache function results based on arguments."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        # Create a cache key based on function name and arguments
+        cache_key = hashlib.md5(str((func.__name__, args, sorted(kwargs.items()))).encode()).hexdigest()
+        
+        # Check if result is in cache and not expired
+        if cache_key in cache:
+            result, timestamp = cache[cache_key]
+            # Cache for 5 minutes
+            if datetime.now() - timestamp < timedelta(minutes=5):
+                logger.info(f"Returning cached result for {func.__name__}")
+                return result
+        
+        # Compute result and store in cache
+        result = func(*args, **kwargs)
+        cache[cache_key] = (result, datetime.now())
+        return result
+    return wrapper
 
 class DataFetcher:
     """
@@ -161,6 +188,7 @@ class DataFetcher:
             logger.error(f"Error loading cached data from {filepath}: {e}")
             return None
     
+    @cache_result
     def fetch_data(self, symbols, period='1y', interval='1d', output_dir=None, use_cache=True, cache_max_age=30):
         """
         Fetch data for the given symbols, using cache if available and recent.
@@ -204,40 +232,53 @@ class DataFetcher:
             logger.info("All data loaded from cache")
             return data
         
-        if self.use_vectorbt and VECTORBT_AVAILABLE:
+        if self.use_vectorbt and VECTORBT_AVAILABLE and vbt is not None:
             try:
                 logger.info(f"Fetching data for {symbols_to_fetch} using vectorbt")
                 vbt_data = vbt.YFData.download(symbols_to_fetch, period=period, interval=interval)
                 full_df = vbt_data.get()
                 
-                if full_df is not None and not full_df.empty:
-                    for symbol in symbols_to_fetch:
+                # Check if we have valid data
+                if full_df is not None:
+                    # Convert to DataFrame if needed
+                    if not isinstance(full_df, pd.DataFrame):
+                        # Try to convert to DataFrame
                         try:
-                            if isinstance(full_df.columns, pd.MultiIndex):
-                                symbol_df = full_df[symbol]
-                            elif len(symbols_to_fetch) == 1 and symbol == symbols_to_fetch[0]:
-                                symbol_df = full_df
-                            else:
-                                logger.warning(f"Unexpected DataFrame structure when processing {symbol}")
+                            full_df = pd.DataFrame(full_df)
+                        except:
+                            # If conversion fails, log and continue with yfinance
+                            logger.warning(f"Could not convert vectorbt result to DataFrame for symbols: {symbols_to_fetch}")
+                            full_df = None
+                    
+                    if full_df is not None and isinstance(full_df, pd.DataFrame) and not full_df.empty:
+                        for symbol in symbols_to_fetch:
+                            try:
+                                symbol_df = None
+                                if isinstance(full_df.columns, pd.MultiIndex):
+                                    symbol_df = full_df[symbol]
+                                elif len(symbols_to_fetch) == 1 and symbol == symbols_to_fetch[0]:
+                                    symbol_df = full_df
+                                else:
+                                    logger.warning(f"Unexpected DataFrame structure when processing {symbol}")
+                                    self.failed_symbols.append(symbol)
+                                    continue
+                                    
+                                if symbol_df is not None and isinstance(symbol_df, (pd.DataFrame, pd.Series)) and not symbol_df.empty:
+                                    data[symbol] = symbol_df
+                                    logger.info(f"Successfully processed data for {symbol} using vectorbt")
+                                    self.get_company_name(symbol)
+                                else:
+                                    logger.warning(f"No data extracted for {symbol} from vectorbt result")
+                                    self.failed_symbols.append(symbol)
+                            except KeyError:
+                                logger.error(f"Symbol {symbol} not found in vectorbt results.")
                                 self.failed_symbols.append(symbol)
-                                continue
-                                
-                            if symbol_df is not None and not symbol_df.empty:
-                                data[symbol] = symbol_df
-                                logger.info(f"Successfully processed data for {symbol} using vectorbt")
-                                self.get_company_name(symbol)
-                            else:
-                                logger.warning(f"No data extracted for {symbol} from vectorbt result")
+                            except Exception as e:
+                                logger.error(f"Error processing {symbol} data from vectorbt result: {e}")
                                 self.failed_symbols.append(symbol)
-                        except KeyError:
-                            logger.error(f"Symbol {symbol} not found in vectorbt results.")
-                            self.failed_symbols.append(symbol)
-                        except Exception as e:
-                            logger.error(f"Error processing {symbol} data from vectorbt result: {e}")
-                            self.failed_symbols.append(symbol)
-                else:
-                    logger.warning(f"No data returned by vectorbt.YFData.get() for symbols: {symbols_to_fetch}")
-                    self.failed_symbols.extend(symbols_to_fetch)
+                    else:
+                        logger.warning(f"No valid data returned by vectorbt.YFData.get() for symbols: {symbols_to_fetch}")
+                        self.failed_symbols.extend(symbols_to_fetch)
 
             except Exception as e:
                 logger.error(f"Error fetching or processing data with vectorbt: {e}")
