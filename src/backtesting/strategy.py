@@ -27,7 +27,7 @@ class Strategy(ABC):
         logger.info(f"Strategy '{name}' initialized")
     
     @abstractmethod
-    def generate_signals(self, data):
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
         """
         価格データに基づいて取引シグナルを生成する
         
@@ -77,7 +77,7 @@ class MovingAverageCrossoverStrategy(Strategy):
         self.long_window = long_window
         logger.info(f"MA Crossover Strategy initialized with short_window={short_window}, long_window={long_window}")
     
-    def generate_signals(self, data):
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
         """
         移動平均交差に基づいてシグナルを生成する (vectorbt使用)
         
@@ -89,16 +89,71 @@ class MovingAverageCrossoverStrategy(Strategy):
         """
         close = data['Close']
         # Calculate SMAs using vectorbt
-        short_ma_indicator = vbt.MA.run(close, window=self.short_window, short_name='fast')
-        long_ma_indicator = vbt.MA.run(close, window=self.long_window, short_name='slow')
+        short_ma_result = vbt.MA.run(close, window=self.short_window)
+        long_ma_result = vbt.MA.run(close, window=self.long_window)
+        
+        # Safely access the ma attribute
+        # For vectorbt indicators, we need to handle different return types
+        short_ma_values = None
+        long_ma_values = None
+        
+        try:
+            # Try to get the ma values directly using getattr with default
+            short_ma_values = getattr(short_ma_result, 'ma', None)
+            long_ma_values = getattr(long_ma_result, 'ma', None)
+        except:
+            pass
+            
+        # If we couldn't get the ma attribute, try other approaches
+        if short_ma_values is None:
+            try:
+                if hasattr(short_ma_result, '__getitem__') and len(short_ma_result) > 0:
+                    # If it's a tuple or similar, try to get the first element
+                    short_ma_values = short_ma_result[0]
+                else:
+                    # Fallback to pandas
+                    short_ma_values = close.rolling(window=self.short_window).mean()
+            except:
+                # Final fallback to pandas
+                short_ma_values = close.rolling(window=self.short_window).mean()
+                
+        if long_ma_values is None:
+            try:
+                if hasattr(long_ma_result, '__getitem__') and len(long_ma_result) > 0:
+                    # If it's a tuple or similar, try to get the first element
+                    long_ma_values = long_ma_result[0]
+                else:
+                    # Fallback to pandas
+                    long_ma_values = close.rolling(window=self.long_window).mean()
+            except:
+                # Final fallback to pandas
+                long_ma_values = close.rolling(window=self.long_window).mean()
+        
+        # If we still don't have valid values, fallback to pandas
+        if not isinstance(short_ma_values, (pd.Series, np.ndarray)) or len(short_ma_values) != len(close):
+            short_ma_values = close.rolling(window=self.short_window).mean()
+        if not isinstance(long_ma_values, (pd.Series, np.ndarray)) or len(long_ma_values) != len(close):
+            long_ma_values = close.rolling(window=self.long_window).mean()
+        
+        # Convert to pandas Series if they are numpy arrays
+        if isinstance(short_ma_values, np.ndarray):
+            short_ma_values = pd.Series(short_ma_values, index=close.index)
+        if isinstance(long_ma_values, np.ndarray):
+            long_ma_values = pd.Series(long_ma_values, index=close.index)
         
         # Generate long entry/exit signals based on crossover
-        long_entries = short_ma_indicator.ma_crossed_above(long_ma_indicator.ma)
-        long_exits = short_ma_indicator.ma_crossed_below(long_ma_indicator.ma)
+        long_entries = short_ma_values > long_ma_values
+        long_exits = short_ma_values < long_ma_values
         
-        # This strategy doesn't generate short signals
-        short_entries = pd.Series(False, index=data.index)
-        short_exits = pd.Series(False, index=data.index)
+        # Generate short entry/exit signals based on crossover (opposite of long signals)
+        short_entries = short_ma_values < long_ma_values
+        short_exits = short_ma_values > long_ma_values
+        
+        # Shift signals to avoid look-ahead bias
+        long_entries = long_entries.shift(1).fillna(False)
+        long_exits = long_exits.shift(1).fillna(False)
+        short_entries = short_entries.shift(1).fillna(False)
+        short_exits = short_exits.shift(1).fillna(False)
         
         signals_df = pd.DataFrame({
             'long_entries': long_entries,
@@ -106,8 +161,8 @@ class MovingAverageCrossoverStrategy(Strategy):
             'short_entries': short_entries,
             'short_exits': short_exits,
             # Optionally include indicator values for visualization/debugging
-            f'SMA_{self.short_window}': short_ma_indicator.ma,
-            f'SMA_{self.long_window}': long_ma_indicator.ma
+            f'SMA_{self.short_window}': short_ma_values,
+            f'SMA_{self.long_window}': long_ma_values
         })
 
         return signals_df
@@ -115,8 +170,8 @@ class MovingAverageCrossoverStrategy(Strategy):
     def calculate_position_size(self, data, signals, initial_capital=10000.0):
         """固定株数（例: 10株）を取引するサイズ指定を生成"""
         size_series = pd.Series(0.0, index=signals.index) # Default size 0
-        # Trade 10 shares on long entry or exit signals
-        size_series[signals['long_entries'] | signals['long_exits']] = 10.0
+        # Trade 10 shares on any entry or exit signals
+        size_series[signals['long_entries'] | signals['long_exits'] | signals['short_entries'] | signals['short_exits']] = 10.0
         return size_series
 
 
@@ -142,7 +197,7 @@ class RSIStrategy(Strategy):
         self.overbought = overbought
         logger.info(f"RSI Strategy initialized with period={rsi_period}, oversold={oversold}, overbought={overbought}")
     
-    def generate_signals(self, data):
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
         """
         RSIに基づいてシグナルを生成する (vectorbt使用)
         
@@ -155,14 +210,34 @@ class RSIStrategy(Strategy):
         close = data['Close']
         # Calculate RSI using vectorbt
         rsi_indicator = vbt.RSI.run(close, window=self.rsi_period)
-        rsi = rsi_indicator.rsi
+        
+        # Safely access the rsi attribute
+        try:
+            rsi = getattr(rsi_indicator, 'rsi', close.rolling(window=self.rsi_period).apply(self._rsi_pandas, raw=False))
+        except:
+            # Fallback to pandas if vectorbt fails
+            rsi = close.rolling(window=self.rsi_period).apply(self._rsi_pandas, raw=False)
+        
+        # Convert to pandas Series if it's not already
+        if not isinstance(rsi, pd.Series):
+            rsi = pd.Series(rsi, index=close.index)
         
         # Generate signals based on oversold/overbought levels
+        # Long entry when RSI crosses below oversold level (indicating upward momentum)
         long_entries = rsi < self.oversold
-        short_exits = long_entries # Exit short when oversold is reached
+        # Long exit when RSI crosses above oversold level
+        long_exits = rsi > self.oversold
         
+        # Short entry when RSI crosses above overbought level (indicating downward momentum)
         short_entries = rsi > self.overbought
-        long_exits = short_entries # Exit long when overbought is reached
+        # Short exit when RSI crosses below overbought level
+        short_exits = rsi < self.overbought
+        
+        # Shift signals to avoid look-ahead bias
+        long_entries = long_entries.shift(1).fillna(False)
+        long_exits = long_exits.shift(1).fillna(False)
+        short_entries = short_entries.shift(1).fillna(False)
+        short_exits = short_exits.shift(1).fillna(False)
         
         signals_df = pd.DataFrame({
             'long_entries': long_entries,
@@ -174,6 +249,21 @@ class RSIStrategy(Strategy):
         })
         
         return signals_df
+
+    def _rsi_pandas(self, prices):
+        """Calculate RSI using pandas"""
+        # Make sure we have enough data
+        if len(prices) < self.rsi_period + 1:
+            return 50  # Return neutral RSI value if not enough data
+            
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        
+        # Avoid division by zero
+        rs = gain / loss.where(loss != 0, 1e-10)
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1] if len(rsi) > 0 else 50
 
     def calculate_position_size(self, data, signals, initial_capital=10000.0):
         """固定株数（例: 10株）を取引するサイズ指定を生成"""

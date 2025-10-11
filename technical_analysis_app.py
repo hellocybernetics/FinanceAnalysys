@@ -168,6 +168,106 @@ def sanitize_symbol(symbol):
     return symbol.replace(" ", "").upper()
 
 
+def get_default_params_for_period_interval(period, interval):
+    """
+    Get appropriate default parameters for technical indicators based on selected period and interval.
+    
+    Args:
+        period (str): Selected period (e.g., '1d', '1mo', '1y')
+        interval (str): Selected interval (e.g., '1m', '1h', '1d')
+        
+    Returns:
+        dict: Dictionary containing default parameters for various indicators
+    """
+    # Default parameters
+    defaults = {
+        'sma_short': 20,
+        'sma_long': 50,
+        'ema_short': 12,
+        'ema_long': 50,
+        'rsi_length': 14,
+        'macd_fast': 12,
+        'macd_slow': 26,
+        'macd_signal': 9,
+        'bb_length': 20,
+        'bb_std': 2.0,
+        'stoch_k': 14,
+        'stoch_d': 3,
+        'adx_length': 14,
+        'willr_length': 14
+    }
+    
+    # Adjust parameters based on period and interval
+    if period == "1d":
+        if interval in ["1m", "5m", "15m", "30m"]:
+            # For very short intervals, use shorter periods
+            defaults.update({
+                'sma_short': 50,
+                'sma_long': 100,
+                'ema_short': 50,
+                'ema_long': 100,
+                'rsi_length': 7,
+                'bb_length': 10,
+                'stoch_k': 7,
+                'adx_length': 7,
+                'willr_length': 7
+            })
+        elif interval == "1h":
+            # For hourly data, use moderate periods
+            defaults.update({
+                'sma_short': 50,
+                'sma_long': 100,
+                'ema_short': 50,
+                'ema_long': 100,
+                'rsi_length': 10,
+                'bb_length': 15,
+                'stoch_k': 10,
+                'adx_length': 10,
+                'willr_length': 10
+            })
+    elif period in ["1mo", "3mo"]:
+        # For monthly data, use moderate periods
+        defaults.update({
+            'sma_short': 50,
+            'sma_long': 100,
+            'ema_short': 50,
+            'ema_long': 100,
+            'rsi_length': 10,
+            'bb_length': 15,
+            'stoch_k': 10,
+            'adx_length': 10,
+            'willr_length': 10
+        })
+    elif period in ["6mo", "1y", "2y"]:
+        # For longer periods, use standard periods
+        defaults.update({
+            'sma_short': 20,
+            'sma_long': 50,
+            'ema_short': 12,
+            'ema_long': 50,
+            'rsi_length': 14,
+            'bb_length': 20,
+            'stoch_k': 14,
+            'adx_length': 14,
+            'willr_length': 14
+        })
+    elif period in ["5y", "max"]:
+        # For very long periods, use longer periods
+        defaults.update({
+            'sma_short': 50,
+            'sma_long': 200,
+            'ema_short': 26,
+            'ema_long': 50,
+            'rsi_length': 14,
+            'bb_length': 20,
+            'stoch_k': 14,
+            'adx_length': 14,
+            'willr_length': 14
+        })
+        
+    return defaults
+
+
 def parse_symbol_list(raw_symbols, primary_symbol):
     """Turn a raw comma/newline separated string into a list of unique symbols."""
 
@@ -231,14 +331,14 @@ with st.sidebar:
 
     raw_symbol = st.text_input(
         "Primary Stock Symbol",
-        value="AAPL",
-        help="Enter the main ticker symbol to analyze (e.g., AAPL, MSFT, GOOGL).",
+        value="NVDA",
+        help="Enter the main ticker symbol to analyze (e.g., NVDA, TSLA, MSFT).",
     )
     symbol = sanitize_symbol(raw_symbol) if raw_symbol else ""
 
     multi_symbols_raw = st.text_area(
         "Compare Symbols",
-        value="MSFT, GOOGL",
+        value="AAPL, MSFT, GOOGL, AMZN, TSLA, META",
         help="Provide additional ticker symbols separated by commas or new lines for multi-symbol analysis.",
     )
 
@@ -279,75 +379,82 @@ with st.sidebar:
         interval = st.selectbox("Select Interval", options=list(interval_options.keys()), index=2)
         interval_value = interval_options[interval]
 
+    # Get default parameters based on selected period and interval
+    default_params = get_default_params_for_period_interval(period_value, interval_value)
+    
     st.subheader("Technical Indicators")
 
     st.markdown("##### Moving Averages")
     use_sma = st.checkbox("Simple Moving Average (SMA)", value=True)
-    sma_short_length = 20
-    sma_long_length = 50
+    sma_short_length = default_params['sma_short']
+    sma_long_length = default_params['sma_long']
     if use_sma:
         sma_col1, sma_col2 = st.columns(2)
         with sma_col1:
-            sma_short_length = st.number_input("SMA Short Length", min_value=5, max_value=100, value=20, step=5)
+            sma_short_length = st.number_input("SMA Short Length", min_value=5, max_value=100, value=default_params['sma_short'], step=5)
         with sma_col2:
-            sma_long_length = st.number_input("SMA Long Length", min_value=50, max_value=200, value=50, step=5)
+            sma_long_length = st.number_input("SMA Long Length", min_value=50, max_value=200, value=default_params['sma_long'], step=5)
 
     use_ema = st.checkbox("Exponential Moving Average (EMA)", value=True)
-    ema_short_length = 12
-    ema_long_length = 50
+    ema_short_length = default_params['ema_short']
+    ema_long_length = default_params['ema_long']
     if use_ema:
         ema_col1, ema_col2 = st.columns(2)
         with ema_col1:
-            ema_short_length = st.number_input("EMA Short Length", min_value=5, max_value=100, value=12, step=5)
+            ema_short_length = st.number_input("EMA Short Length", min_value=5, max_value=100, value=default_params['ema_short'], step=5)
         with ema_col2:
-            ema_long_length = st.number_input("EMA Long Length", min_value=50, max_value=200, value=50, step=5)
+            ema_long_length = st.number_input("EMA Long Length", min_value=50, max_value=200, value=default_params['ema_long'], step=5)
 
     st.markdown("##### Oscillators")
     use_rsi = st.checkbox("Relative Strength Index (RSI)", value=True)
     rsi_length = st.slider(
-        "RSI Length", min_value=5, max_value=30, value=14, step=1, disabled=not use_rsi
+        "RSI Length", min_value=5, max_value=30, value=default_params['rsi_length'], step=1, disabled=not use_rsi
     )
 
     use_macd = st.checkbox("MACD", value=False)
-    macd_fast, macd_slow, macd_signal = 12, 26, 9
+    macd_fast = default_params['macd_fast']
+    macd_slow = default_params['macd_slow']
+    macd_signal = default_params['macd_signal']
     if use_macd:
         macd_col1, macd_col2 = st.columns(2)
         with macd_col1:
             macd_fast = st.number_input(
-                "Fast Length", min_value=5, max_value=30, value=12, step=1
+                "Fast Length", min_value=5, max_value=30, value=default_params['macd_fast'], step=1
             )
             macd_signal = st.number_input(
-                "Signal Length", min_value=3, max_value=15, value=9, step=1
+                "Signal Length", min_value=3, max_value=15, value=default_params['macd_signal'], step=1
             )
         with macd_col2:
             macd_slow = st.number_input(
-                "Slow Length", min_value=10, max_value=50, value=26, step=1
+                "Slow Length", min_value=10, max_value=50, value=default_params['macd_slow'], step=1
             )
 
     use_bbands = st.checkbox("Bollinger Bands", value=True)
-    bb_length, bb_std = 20, 2.0
+    bb_length = default_params['bb_length']
+    bb_std = default_params['bb_std']
     if use_bbands:
         bb_col1, bb_col2 = st.columns(2)
         with bb_col1:
-            bb_length = st.number_input("Length", min_value=5, max_value=50, value=20, step=1)
+            bb_length = st.number_input("Length", min_value=5, max_value=50, value=default_params['bb_length'], step=1)
         with bb_col2:
             bb_std = st.number_input(
-                "Standard Deviation", min_value=1.0, max_value=4.0, value=2.0, step=0.1
+                "Standard Deviation", min_value=1.0, max_value=4.0, value=default_params['bb_std'], step=0.1
             )
 
     st.markdown("##### Additional Indicators")
     use_stoch = st.checkbox("Stochastic Oscillator", value=False)
-    stoch_k, stoch_d = 14, 3
+    stoch_k = default_params['stoch_k']
+    stoch_d = default_params['stoch_d']
     if use_stoch:
         stoch_col1, stoch_col2 = st.columns(2)
         with stoch_col1:
-            stoch_k = st.number_input("K Length", min_value=5, max_value=30, value=14, step=1)
+            stoch_k = st.number_input("K Length", min_value=5, max_value=30, value=default_params['stoch_k'], step=1)
         with stoch_col2:
-            stoch_d = st.number_input("D Length", min_value=1, max_value=10, value=3, step=1)
+            stoch_d = st.number_input("D Length", min_value=1, max_value=10, value=default_params['stoch_d'], step=1)
 
     use_adx = st.checkbox("Average Directional Index (ADX)", value=False)
     adx_length = st.slider(
-        "ADX Length", min_value=5, max_value=30, value=14, step=1, disabled=not use_adx
+        "ADX Length", min_value=5, max_value=30, value=default_params['adx_length'], step=1, disabled=not use_adx
     )
 
     use_willr = st.checkbox("Williams %R", value=False)
@@ -355,7 +462,7 @@ with st.sidebar:
         "Williams %R Length",
         min_value=5,
         max_value=30,
-        value=14,
+        value=default_params['willr_length'],
         step=1,
         disabled=not use_willr,
     )
@@ -548,7 +655,7 @@ if multi_data:
                     data=csv,
                     file_name=f"{sym}_technical_analysis.csv",
                     mime="text/csv",
-                    key=f"download_{sym}_csv",
+                    key=f"download_{sym}_csv_{int(time.time())}",  # Add timestamp to key to avoid conflicts
                 )
             with col2:
                 if fig:
@@ -559,7 +666,7 @@ if multi_data:
                         data=html_string,
                         file_name=f"{sym}_technical_analysis.html",
                         mime="text/html",
-                        key=f"download_{sym}_chart",
+                        key=f"download_{sym}_chart_{int(time.time())}",  # Add timestamp to key to avoid conflicts
                     )
 else:
     st.info(
@@ -719,6 +826,7 @@ with st.expander("Backtest Trading Strategies", expanded=False):
                 data=csv,
                 file_name=f"{stored_symbol}_{strategy.name}_signals.csv",
                 mime="text/csv",
+                key=f"download_signals_{int(time.time())}",  # Add timestamp to key to avoid conflicts
             )
 
 st.markdown("---")

@@ -65,7 +65,32 @@ class BacktestEngine:
         logger.info(f"Running backtest with strategy '{strategy.name}'")
         
         # --- Frequency Handling ---
+        # Try to infer frequency from the data
         inferred_freq = pd.infer_freq(data.index)
+        
+        # If inference fails, try to determine from the interval between first two data points
+        if not inferred_freq and len(data.index) > 1:
+            # Calculate the time difference between consecutive data points
+            time_diff = data.index[1] - data.index[0]
+            
+            # Map common time differences to frequency strings
+            if time_diff <= pd.Timedelta(minutes=1):
+                inferred_freq = 'T'  # Minute
+            elif time_diff <= pd.Timedelta(minutes=5):
+                inferred_freq = '5T'  # 5 Minutes
+            elif time_diff <= pd.Timedelta(minutes=15):
+                inferred_freq = '15T'  # 15 Minutes
+            elif time_diff <= pd.Timedelta(minutes=30):
+                inferred_freq = '30T'  # 30 Minutes
+            elif time_diff <= pd.Timedelta(hours=1):
+                inferred_freq = 'H'  # Hourly
+            elif time_diff <= pd.Timedelta(days=1):
+                inferred_freq = 'D'  # Daily
+            elif time_diff <= pd.Timedelta(weeks=1):
+                inferred_freq = 'W'  # Weekly
+            else:
+                inferred_freq = 'M'  # Monthly (approximate)
+        
         if inferred_freq:
             freq_to_use = inferred_freq
             logger.info(f"Inferred data frequency: {freq_to_use}")
@@ -102,17 +127,29 @@ class BacktestEngine:
         
         stats = portfolio.stats()
         
+        # Handle potential None values in stats
+        total_return_pct = stats.get('Total Return [%]', 0.0) if stats is not None else 0.0
+        total_return = total_return_pct / 100.0 if total_return_pct is not None else 0.0
+        
+        sharpe_ratio = stats.get('Sharpe Ratio', 0.0) if stats is not None else 0.0
+        
+        max_drawdown_pct = stats.get('Max Drawdown [%]', 0.0) if stats is not None else 0.0
+        max_drawdown = max_drawdown_pct / 100.0 if max_drawdown_pct is not None else 0.0
+        
+        win_rate_pct = stats.get('Win Rate [%]', None) if stats is not None else None
+        win_rate = win_rate_pct / 100.0 if win_rate_pct is not None else None
+        
         result = {
             'portfolio': portfolio,
             'stats': stats,
             'signals': signals_df,
             'equity_curve': portfolio.value(),
-            'drawdown': portfolio.drawdown(),
+            'drawdown': getattr(portfolio, 'drawdown', lambda: pd.Series(0, index=data.index))(),
             'trades': portfolio.trades,
-            'total_return': stats.get('Total Return [%]', 0.0) / 100.0,
-            'sharpe_ratio': stats.get('Sharpe Ratio', 0.0),
-            'max_drawdown': stats.get('Max Drawdown [%]', 0.0) / 100.0,
-            'win_rate': stats.get('Win Rate [%]', None) / 100.0 if stats.get('Win Rate [%]') is not None else None,
+            'total_return': total_return,
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown,
+            'win_rate': win_rate,
         }
         
         logger.info(f"Backtest completed with total return: {result['total_return']:.2%}")
