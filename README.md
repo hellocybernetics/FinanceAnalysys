@@ -4,11 +4,11 @@
 
 ## 特徴
 
-- 株価データの取得(yfinance,openbb)
+- 株価データの取得(yfinance)
 - 株価データのテクニカル分析(Ta-Lib)
 - 株価データの機械学習アルゴリズム開発(scikit-learn, scipy)
 - 株価データの金融統計解析(financepy)
-- 分析結果の表示(matplitlib, seabron)
+- 分析結果の表示(Plotly - インタラクティブチャート)
 - 高速バックテスト(vectortb)
 - docker上でのバックテストとトレード(lean)
 - Twitter APIを使った分析結果の自動投稿(tweepy, twitter)
@@ -32,7 +32,7 @@
    - 設定ファイルによる指標パラメータのカスタマイズ
 
 3. **可視化モジュール**
-   - 株価とテクニカル指標の可視化
+   - 株価とテクニカル指標の可視化（ローソク足チャート対応）
    - 複数の指標を含む総合チャートの生成
    - 結果をPNG形式で保存
 
@@ -155,6 +155,60 @@ visualization:
   figsize: [12, 8]
   dpi: 300
   show_plots: false
+```
+
+## GitHubへのデプロイ
+
+このアプリケーションはGitHub PagesやStreamlit Community Cloudなどのサービスにデプロイできます。
+
+### GitHub Pagesへのデプロイ手順
+
+1. リポジトリをGitHubにプッシュします
+2. GitHub Actionsを使用して自動デプロイを設定します（既に`.github/workflows/deploy-pages.yml`に設定ファイルがあります）
+
+### Streamlit Community Cloudへのデプロイ手順
+
+1. GitHubにリポジトリをプッシュ
+2. [Streamlit Community Cloud](https://streamlit.io/cloud)にアクセス
+3. "New app"をクリック
+4. リポジトリとアプリケーションファイル(`technical_analysis_app.py`)を選択
+5. 設定を確認してデプロイ
+
+### Dockerを使用したデプロイ
+
+```bash
+# Dockerイメージのビルド
+docker build -t finance-analysis-app .
+
+# コンテナの実行
+docker run -p 8501:8501 finance-analysis-app
+```
+
+### デプロイスクリプトの使用
+
+```bash
+# Unix/Linux/macOS
+./deploy.sh
+
+# Windows PowerShell
+.\deploy.ps1
+```
+
+### 必要な環境変数
+
+- Python 3.13
+- uvパッケージマネージャー
+- 依存関係は`pyproject.toml`で管理されています
+
+### デプロイ用の推奨設定
+
+```bash
+# 環境構築
+uv venv
+uv sync
+
+# アプリケーションの実行
+uv run streamlit run technical_analysis_app.py
 ```
 
 ## 開発方針

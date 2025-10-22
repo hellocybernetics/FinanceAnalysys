@@ -1,226 +1,255 @@
 """
-バックテストエンジンの実装
+Backtesting engine for executing and evaluating trading strategies.
 """
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from datetime import datetime
 import logging
-import os
-import vectorbt as vbt
-from vectorbt.portfolio.enums import SizeType
+from typing import Optional
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
-from ..data.data_fetcher import DataFetcher
-from .strategy import Strategy
+from src.backtesting.strategy import BaseStrategy
+from src.backtesting.performance import PerformanceCalculator
 
 logger = logging.getLogger(__name__)
 
+
 class BacktestEngine:
     """
-    バックテスト実行エンジン
-    ストラテジーを受け取り、バックテストを実行して結果を返す
+    Engine for running backtests on trading strategies.
     """
-    
-    def __init__(self, use_vectorbt=True):
+
+    def __init__(self, use_vectorbt: bool = False):
         """
-        バックテストエンジンを初期化する
-        
+        Initialize the backtest engine.
+
         Args:
-            use_vectorbt (bool): データ取得にvectorbtを使用するかどうか (現在は常にTrueとして扱われます)
+            use_vectorbt (bool): Whether to use vectorbt for backtesting (reserved for future use).
         """
-        self.data_fetcher = DataFetcher(use_vectorbt=True)
-        logger.info("BacktestEngine initialized (using vectorbt)")
-    
-    def fetch_data(self, symbols, period='1y', interval='1d'):
+        self.use_vectorbt = use_vectorbt
+        self.performance_calculator = PerformanceCalculator()
+
+    def run(
+        self,
+        df: pd.DataFrame,
+        strategy: BaseStrategy,
+        initial_capital: float = 10000.0,
+        commission: float = 0.001,
+    ) -> dict:
         """
-        バックテスト用のデータを取得する
-        
+        Run a backtest on the given data with the specified strategy.
+
         Args:
-            symbols (list): データを取得する銘柄のリスト
-            period (str): データ取得期間
-            interval (str): データの間隔
-            
+            df (pd.DataFrame): DataFrame containing OHLCV data.
+            strategy (BaseStrategy): Trading strategy to backtest.
+            initial_capital (float): Initial capital for the backtest.
+            commission (float): Commission rate per trade (e.g., 0.001 for 0.1%).
+
         Returns:
-            dict: シンボルをキー、DataFrameを値とする辞書
+            dict: Dictionary containing backtest results including:
+                - signals: DataFrame with trading signals
+                - trades: DataFrame with executed trades
+                - equity_curve: Series with equity over time
+                - total_return: Total return
+                - sharpe_ratio: Sharpe ratio
+                - max_drawdown: Maximum drawdown
+                - win_rate: Win rate
+                - profit_factor: Profit factor
+                - total_trades: Total number of trades
         """
-        return self.data_fetcher.fetch_data(symbols, period=period, interval=interval)
-    
-    def run_backtest(self, strategy, data, initial_capital=10000.0, commission=0.001):
-        """
-        指定されたストラテジーに対してバックテストを実行する
-        
-        Args:
-            strategy (Strategy): バックテストするストラテジーのインスタンス
-            data (pd.DataFrame): OHLCV価格データを含むDataFrame
-            initial_capital (float): 初期資本
-            commission (float): 取引手数料（1取引あたりの割合）
-            
-        Returns:
-            dict: バックテスト結果を含む辞書
-        """
-        if not isinstance(strategy, Strategy):
-            raise TypeError("strategy must be an instance of Strategy")
-        
-        logger.info(f"Running backtest with strategy '{strategy.name}'")
-        
-        # --- Frequency Handling ---
-        inferred_freq = pd.infer_freq(data.index)
-        if inferred_freq:
-            freq_to_use = inferred_freq
-            logger.info(f"Inferred data frequency: {freq_to_use}")
-        else:
-            freq_to_use = 'D' # Default to daily if inference fails
-            logger.warning("Could not infer data frequency. Assuming daily ('D').")
-        # --- End Frequency Handling ---
-        
-        signals_df = strategy.generate_signals(data)
-        size_series = strategy.calculate_position_size(data, signals_df, initial_capital)
-        
-        if signals_df is None or not all(col in signals_df.columns for col in ['long_entries', 'long_exits', 'short_entries', 'short_exits']):
-            logger.error("Invalid signals data: required signal columns not found")
-            portfolio = vbt.Portfolio.from_holding(
-                data['Close'], 
-                init_cash=initial_capital,
-                fees=commission,
-                freq=freq_to_use
-            )
-        else:
-            logger.info("Creating portfolio with dynamic size based on 'Amount' (shares)")
-            portfolio = vbt.Portfolio.from_signals(
-                data['Close'],
-                entries=signals_df['long_entries'],
-                exits=signals_df['long_exits'],
-                short_entries=signals_df['short_entries'],
-                short_exits=signals_df['short_exits'],
-                size=size_series,
-                size_type=SizeType.Amount,
-                init_cash=initial_capital,
-                fees=commission,
-                freq=freq_to_use
-            )
-        
-        stats = portfolio.stats()
-        
+        logger.info(f"Running backtest for strategy: {strategy.name}")
+
+        # Generate signals
+        df_with_signals = strategy.generate_signals(df)
+
+        # Execute trades based on signals
+        trades, equity_curve = self._execute_trades(
+            df_with_signals, initial_capital, commission
+        )
+
+        # Calculate performance metrics
+        metrics = self.performance_calculator.calculate_all_metrics(equity_curve, trades)
+
+        # Combine results
         result = {
-            'portfolio': portfolio,
-            'stats': stats,
-            'signals': signals_df,
-            'equity_curve': portfolio.value(),
-            'drawdown': portfolio.drawdown(),
-            'trades': portfolio.trades,
-            'total_return': stats.get('Total Return [%]', 0.0) / 100.0,
-            'sharpe_ratio': stats.get('Sharpe Ratio', 0.0),
-            'max_drawdown': stats.get('Max Drawdown [%]', 0.0) / 100.0,
-            'win_rate': stats.get('Win Rate [%]', None) / 100.0 if stats.get('Win Rate [%]') is not None else None,
+            'signals': df_with_signals,
+            'trades': trades,
+            'equity_curve': equity_curve,
+            **metrics,
         }
-        
-        logger.info(f"Backtest completed with total return: {result['total_return']:.2%}")
+
+        logger.info(f"Backtest completed for {strategy.name}")
         return result
-    
-    def visualize_results(self, result, symbol, strategy_name=None, figsize=(12, 10)):
-        """
-        バックテスト結果を視覚化する
-        
-        Args:
-            result (dict): run_backtest()から返された結果辞書
-            symbol (str): 銘柄シンボル
-            strategy_name (str): 戦略名（Noneの場合、result内のstrategy.nameを使用）
-            figsize (tuple): 図のサイズ
-            
-        Returns:
-            matplotlib.figure.Figure: 作成された図のオブジェクト
-        """
-        if strategy_name is None and 'strategy' in result:
-            strategy_name = result['strategy'].name
-        elif strategy_name is None:
-            strategy_name = "Unknown Strategy"
-        
-        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
-        
-        # 1. 価格と売買シグナル
-        ax1.plot(result['portfolio'].close.index, result['portfolio'].close, label='Close Price')
-        
-        # Plot new signals using portfolio.close as the price level
-        long_entry_signals = result['portfolio'].close[result['signals']['long_entries']]
-        long_exit_signals = result['portfolio'].close[result['signals']['long_exits']]
-        short_entry_signals = result['portfolio'].close[result['signals']['short_entries']]
-        short_exit_signals = result['portfolio'].close[result['signals']['short_exits']]
-        
-        ax1.plot(long_entry_signals.index, long_entry_signals, '^', markersize=10, color='g', label='Long Entry')
-        ax1.plot(long_exit_signals.index, long_exit_signals, 'v', markersize=10, color='r', label='Long Exit')
-        ax1.plot(short_entry_signals.index, short_entry_signals, 'v', markersize=10, color='m', label='Short Entry') # Magenta for short entry
-        ax1.plot(short_exit_signals.index, short_exit_signals, '^', markersize=10, color='c', label='Short Exit')   # Cyan for short exit
 
-        # Optionally plot indicators from signals_df if they exist, using portfolio index
-        indicator_cols = [col for col in result['signals'].columns if col not in ['long_entries', 'long_exits', 'short_entries', 'short_exits', 'Close']] # Exclude 'Close' if it somehow exists
-        for col in indicator_cols:
-            ax1.plot(result['portfolio'].close.index, result['signals'][col], label=col, linestyle='--')
-        
-        ax1.set_ylabel('Price')
-        ax1.set_title(f'{symbol} - {strategy_name} Backtest')
-        ax1.legend()
-        ax1.grid(True)
-        
-        # 2. 累積リターン
-        equity_curve = result['equity_curve']
-        equity_curve.plot(ax=ax2, label='Equity Curve')
-        ax2.set_ylabel('Equity')
-        ax2.legend()
-        ax2.grid(True)
-        
-        plt.tight_layout()
-        
-        return fig
-    
-    def save_results(self, result, symbol, strategy_name, output_dir):
+    def _execute_trades(
+        self,
+        df: pd.DataFrame,
+        initial_capital: float,
+        commission: float,
+    ) -> tuple[pd.DataFrame, pd.Series]:
         """
-        バックテスト結果を保存する
-        
+        Execute trades based on signals.
+
         Args:
-            result (dict): バックテスト結果
-            symbol (str): 銘柄シンボル
-            strategy_name (str): 戦略名
-            output_dir (str): 出力ディレクトリ
-            
+            df (pd.DataFrame): DataFrame with signals.
+            initial_capital (float): Initial capital.
+            commission (float): Commission rate.
+
         Returns:
-            dict: 保存されたファイルのパスを含む辞書
+            tuple: (trades DataFrame, equity curve Series)
         """
-        os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        clean_symbol = symbol.replace('/', '-').replace('^', '')
-        
-        result_paths = {}
-        
-        if 'signals' in result and result['signals'] is not None:
-            signals_path = os.path.join(output_dir, f"{clean_symbol}_{strategy_name}_signals_{timestamp}.csv")
-            result['signals'].to_csv(signals_path)
-            result_paths['signals'] = signals_path
-        
-        if 'stats' in result and result['stats'] is not None:
-            stats_path = os.path.join(output_dir, f"{clean_symbol}_{strategy_name}_stats_{timestamp}.csv")
-            if isinstance(result['stats'], (pd.Series, pd.DataFrame)):
-                 result['stats'].to_csv(stats_path)
+        trades = []
+        position = 0  # 0: no position, 1: long position, -1: short position
+        entry_price = 0.0
+        equity = initial_capital
+        cash = initial_capital
+        equity_curve = []
+
+        for i, row in df.iterrows():
+            signal = row.get('signal', 0.0)
+            close_price = row['Close']
+
+            # Execute trade based on signal
+            if signal == 1.0 and position == 0:
+                # Buy signal - enter long position
+                shares = cash / (close_price * (1 + commission))
+                position = 1
+                entry_price = close_price
+                cash = 0
+                equity = shares * close_price
+
+                trades.append({
+                    'entry_date': i,
+                    'entry_price': entry_price,
+                    'type': 'buy',
+                    'shares': shares,
+                })
+
+            elif signal == -1.0 and position == 1:
+                # Sell signal - exit long position
+                shares = equity / entry_price
+                exit_price = close_price
+                cash = shares * exit_price * (1 - commission)
+                pnl = cash - initial_capital
+
+                # Update the last trade with exit information
+                if trades:
+                    trades[-1].update({
+                        'exit_date': i,
+                        'exit_price': exit_price,
+                        'pnl': pnl,
+                    })
+
+                position = 0
+                equity = cash
+
+            # Update equity curve
+            if position == 1:
+                # If in position, mark-to-market
+                shares = equity / entry_price
+                equity = shares * close_price
             else:
-                 try:
-                     pd.Series(result['stats']).to_csv(stats_path)
-                 except Exception as e:
-                     logger.warning(f"Could not save stats to CSV: {e}")
+                equity = cash
 
-            result_paths['stats'] = stats_path
-        
-        fig = self.visualize_results(result, symbol, strategy_name)
-        chart_path = os.path.join(output_dir, f"{clean_symbol}_{strategy_name}_chart_{timestamp}.png")
-        fig.savefig(chart_path)
-        plt.close(fig)
-        result_paths['chart'] = chart_path
-        
-        if 'trades' in result and result['trades'] is not None and len(result['trades']) > 0:
-            trades_path = os.path.join(output_dir, f"{clean_symbol}_{strategy_name}_trades_{timestamp}.csv")
-            trades_records = result['trades'].records
-            trades_df = pd.DataFrame(trades_records)
-            trades_df.to_csv(trades_path)
-            result_paths['trades'] = trades_path
-        
-        logger.info(f"Backtest results saved to {output_dir}")
-        return result_paths
+            equity_curve.append(equity)
+
+        # Close any open positions at the end
+        if position == 1 and trades:
+            shares = equity / entry_price
+            exit_price = df['Close'].iloc[-1]
+            cash = shares * exit_price * (1 - commission)
+            pnl = cash - initial_capital
+
+            trades[-1].update({
+                'exit_date': df.index[-1],
+                'exit_price': exit_price,
+                'pnl': pnl,
+            })
+
+            equity = cash
+            equity_curve[-1] = equity
+
+        trades_df = pd.DataFrame(trades)
+        equity_series = pd.Series(equity_curve, index=df.index)
+
+        logger.info(f"Executed {len(trades_df)} trades")
+        return trades_df, equity_series
+
+    def visualize_results(
+        self,
+        result: dict,
+        symbol: str,
+        strategy_name: str,
+    ) -> Figure:
+        """
+        Visualize backtest results.
+
+        Args:
+            result (dict): Backtest results from run method.
+            symbol (str): Symbol being backtested.
+            strategy_name (str): Name of the strategy.
+
+        Returns:
+            Figure: Matplotlib figure with visualization.
+        """
+        fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+
+        df = result['signals']
+        equity_curve = result['equity_curve']
+        trades = result['trades']
+
+        # Plot 1: Price and signals
+        ax1 = axes[0]
+        ax1.plot(df.index, df['Close'], label='Close Price', linewidth=1)
+
+        # Plot buy signals
+        buy_signals = df[df['signal'] == 1.0]
+        ax1.scatter(
+            buy_signals.index,
+            buy_signals['Close'],
+            color='green',
+            marker='^',
+            s=100,
+            label='Buy Signal',
+            alpha=0.7,
+        )
+
+        # Plot sell signals
+        sell_signals = df[df['signal'] == -1.0]
+        ax1.scatter(
+            sell_signals.index,
+            sell_signals['Close'],
+            color='red',
+            marker='v',
+            s=100,
+            label='Sell Signal',
+            alpha=0.7,
+        )
+
+        ax1.set_ylabel('Price')
+        ax1.set_title(f'{symbol} - {strategy_name}')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # Plot 2: Equity curve
+        ax2 = axes[1]
+        ax2.plot(equity_curve.index, equity_curve, label='Equity', linewidth=1.5)
+        ax2.set_ylabel('Equity')
+        ax2.set_title('Equity Curve')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        # Plot 3: Drawdown
+        ax3 = axes[2]
+        cumulative_max = equity_curve.cummax()
+        drawdown = (equity_curve - cumulative_max) / cumulative_max * 100
+        ax3.fill_between(drawdown.index, drawdown, 0, alpha=0.3, color='red')
+        ax3.plot(drawdown.index, drawdown, color='red', linewidth=1)
+        ax3.set_ylabel('Drawdown (%)')
+        ax3.set_xlabel('Date')
+        ax3.set_title('Drawdown')
+        ax3.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        return fig

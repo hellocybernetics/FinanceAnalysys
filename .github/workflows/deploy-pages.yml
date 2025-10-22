@@ -36,13 +36,12 @@ jobs:
           path: |
             ~/.cache/uv
             .venv
-          key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml', 'requirements.txt') }}
+          key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-uv-
 
-      - name: Install dependencies with uv add
+      - name: Install dependencies with uv
         run: |
-          uv add --requirements requirements.txt --no-sync
           uv sync
 
       - name: Export static Streamlit build

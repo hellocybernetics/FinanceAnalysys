@@ -2,17 +2,23 @@
 Streamlit app for technical analysis of financial data.
 """
 
+from typing import Any
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import io
 from datetime import datetime, timedelta
 import os
+import time
+import yfinance as yf
 
 from src.analysis.technical_indicators import TechnicalAnalysis
 from src.visualization.visualizer import Visualizer
 from src.data.data_fetcher import DataFetcher
+from src.backtesting.engine import BacktestEngine
+from src.backtesting.strategy import MovingAverageCrossoverStrategy, RSIStrategy
 
 st.set_page_config(
     page_title="Financial Technical Analysis",
@@ -93,9 +99,11 @@ apply_custom_css()
 
 def prepare_indicator_configs(
     use_sma,
-    sma_length,
+    sma_short_length,
+    sma_long_length,
     use_ema,
-    ema_length,
+    ema_short_length,
+    ema_long_length,
     use_rsi,
     rsi_length,
     use_macd,
@@ -118,10 +126,12 @@ def prepare_indicator_configs(
     indicators = []
 
     if use_sma:
-        indicators.append({"name": "SMA", "params": {"length": sma_length}})
+        indicators.append({"name": "SMA", "params": {"length": sma_short_length}})
+        indicators.append({"name": "SMA", "params": {"length": sma_long_length}})
 
     if use_ema:
-        indicators.append({"name": "EMA", "params": {"length": ema_length}})
+        indicators.append({"name": "EMA", "params": {"length": ema_short_length}})
+        indicators.append({"name": "EMA", "params": {"length": ema_long_length}})
 
     if use_rsi:
         indicators.append({"name": "RSI", "params": {"length": rsi_length}})
@@ -160,6 +170,106 @@ def sanitize_symbol(symbol):
     return symbol.replace(" ", "").upper()
 
 
+def get_default_params_for_period_interval(period, interval):
+    """
+    Get appropriate default parameters for technical indicators based on selected period and interval.
+    
+    Args:
+        period (str): Selected period (e.g., '1d', '1mo', '1y')
+        interval (str): Selected interval (e.g., '1m', '1h', '1d')
+        
+    Returns:
+        dict: Dictionary containing default parameters for various indicators
+    """
+    # Default parameters
+    defaults = {
+        'sma_short': 20,
+        'sma_long': 50,
+        'ema_short': 12,
+        'ema_long': 50,
+        'rsi_length': 14,
+        'macd_fast': 12,
+        'macd_slow': 26,
+        'macd_signal': 9,
+        'bb_length': 20,
+        'bb_std': 2.0,
+        'stoch_k': 14,
+        'stoch_d': 3,
+        'adx_length': 14,
+        'willr_length': 14
+    }
+    
+    # Adjust parameters based on period and interval
+    if period == "1d":
+        if interval in ["1m", "5m", "15m", "30m"]:
+            # For very short intervals, use shorter periods
+            defaults.update({
+                'sma_short': 50,
+                'sma_long': 100,
+                'ema_short': 50,
+                'ema_long': 100,
+                'rsi_length': 7,
+                'bb_length': 10,
+                'stoch_k': 7,
+                'adx_length': 7,
+                'willr_length': 7
+            })
+        elif interval == "1h":
+            # For hourly data, use moderate periods
+            defaults.update({
+                'sma_short': 50,
+                'sma_long': 100,
+                'ema_short': 50,
+                'ema_long': 100,
+                'rsi_length': 10,
+                'bb_length': 15,
+                'stoch_k': 10,
+                'adx_length': 10,
+                'willr_length': 10
+            })
+    elif period in ["1mo", "3mo"]:
+        # For monthly data, use moderate periods
+        defaults.update({
+            'sma_short': 50,
+            'sma_long': 100,
+            'ema_short': 50,
+            'ema_long': 100,
+            'rsi_length': 10,
+            'bb_length': 15,
+            'stoch_k': 10,
+            'adx_length': 10,
+            'willr_length': 10
+        })
+    elif period in ["6mo", "1y", "2y"]:
+        # For longer periods, use standard periods
+        defaults.update({
+            'sma_short': 20,
+            'sma_long': 50,
+            'ema_short': 12,
+            'ema_long': 50,
+            'rsi_length': 14,
+            'bb_length': 20,
+            'stoch_k': 14,
+            'adx_length': 14,
+            'willr_length': 14
+        })
+    elif period in ["5y", "max"]:
+        # For very long periods, use longer periods
+        defaults.update({
+            'sma_short': 50,
+            'sma_long': 200,
+            'ema_short': 26,
+            'ema_long': 50,
+            'rsi_length': 14,
+            'bb_length': 20,
+            'stoch_k': 14,
+            'adx_length': 14,
+            'willr_length': 14
+        })
+        
+    return defaults
+
+
 def parse_symbol_list(raw_symbols, primary_symbol):
     """Turn a raw comma/newline separated string into a list of unique symbols."""
 
@@ -170,7 +280,7 @@ def parse_symbol_list(raw_symbols, primary_symbol):
     symbols = [s for s in candidates if s]
 
     # De-duplicate while preserving order and avoiding the primary symbol twice
-    unique_symbols = []
+    unique_symbols: list[Any] = []
     for sym in symbols:
         if sym and sym not in unique_symbols and sym != primary_symbol:
             unique_symbols.append(sym)
@@ -194,6 +304,17 @@ def summarize_performance(df):
     return last_close, period_return, annualized_volatility
 
 
+def fetch_real_time_data(symbol, period="1d", interval="1m"):
+    """Fetch real-time data for a symbol."""
+    try:
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period=period, interval=interval)
+        return data
+    except Exception as e:
+        st.error(f"Error fetching real-time data for {symbol}: {e}")
+        return pd.DataFrame()
+
+
 col1, col2 = st.columns([5, 1])
 with col1:
     st.title("📊 Financial Technical Analysis")
@@ -203,28 +324,29 @@ with col2:
 
 st.markdown("Analyze single or multiple stocks, visualize indicators, and backtest trading ideas.")
 
-tab_single, tab_multi, tab_backtest = st.tabs(
-    ["Single Symbol Analysis", "Multi-Symbol Dashboard", "Backtest"]
-)
+# Main analysis section (merged from Single Symbol and Multi-Symbol tabs)
+st.subheader("Stock Analysis")
+st.caption("Analyze one or multiple stocks with technical indicators. Enter a primary symbol and additional comparison symbols.")
 
 with st.sidebar:
     st.header("Configuration")
 
     raw_symbol = st.text_input(
         "Primary Stock Symbol",
-        value="AAPL",
-        help="Enter the main ticker symbol to analyze (e.g., AAPL, MSFT, GOOGL).",
+        value="NVDA",
+        help="Enter the main ticker symbol to analyze (e.g., NVDA, TSLA, MSFT).",
     )
     symbol = sanitize_symbol(raw_symbol) if raw_symbol else ""
 
     multi_symbols_raw = st.text_area(
         "Compare Symbols",
-        value="MSFT, GOOGL",
+        value="AAPL, MSFT, GOOGL, AMZN, TSLA, META",
         help="Provide additional ticker symbols separated by commas or new lines for multi-symbol analysis.",
     )
 
     st.subheader("Time Period")
     period_options = {
+        "1 Day (Real-time)": "1d",
         "1 Month": "1mo",
         "3 Months": "3mo",
         "6 Months": "6mo",
@@ -237,72 +359,104 @@ with st.sidebar:
     period_value = period_options[period]
 
     interval_options = {
+        "1 Minute (Real-time)": "1m",
+        "1 Hour": "1h",
         "1 Day": "1d",
         "1 Week": "1wk",
         "1 Month": "1mo",
     }
-    interval = st.selectbox("Select Interval", options=list(interval_options.keys()), index=0)
-    interval_value = interval_options[interval]
+    
+    # Adjust interval options based on period
+    if period_value == "1d":
+        interval = st.selectbox("Select Interval", options=["1 Minute (Real-time)", "5 Minutes", "15 Minutes", "30 Minutes", "1 Hour"], index=0)
+        interval_map = {
+            "1 Minute (Real-time)": "1m",
+            "5 Minutes": "5m",
+            "15 Minutes": "15m",
+            "30 Minutes": "30m",
+            "1 Hour": "1h"
+        }
+        interval_value = interval_map[interval]
+    else:
+        interval = st.selectbox("Select Interval", options=list(interval_options.keys()), index=2)
+        interval_value = interval_options[interval]
 
+    # Get default parameters based on selected period and interval
+    default_params = get_default_params_for_period_interval(period_value, interval_value)
+    
     st.subheader("Technical Indicators")
 
     st.markdown("##### Moving Averages")
     use_sma = st.checkbox("Simple Moving Average (SMA)", value=True)
-    sma_length = st.slider(
-        "SMA Length", min_value=5, max_value=200, value=20, step=5, disabled=not use_sma
-    )
+    sma_short_length = default_params['sma_short']
+    sma_long_length = default_params['sma_long']
+    if use_sma:
+        sma_col1, sma_col2 = st.columns(2)
+        with sma_col1:
+            sma_short_length = st.number_input("SMA Short Length", min_value=5, max_value=100, value=default_params['sma_short'], step=5)
+        with sma_col2:
+            sma_long_length = st.number_input("SMA Long Length", min_value=50, max_value=200, value=default_params['sma_long'], step=5)
 
     use_ema = st.checkbox("Exponential Moving Average (EMA)", value=True)
-    ema_length = st.slider(
-        "EMA Length", min_value=5, max_value=200, value=50, step=5, disabled=not use_ema
-    )
+    ema_short_length = default_params['ema_short']
+    ema_long_length = default_params['ema_long']
+    if use_ema:
+        ema_col1, ema_col2 = st.columns(2)
+        with ema_col1:
+            ema_short_length = st.number_input("EMA Short Length", min_value=5, max_value=100, value=default_params['ema_short'], step=5)
+        with ema_col2:
+            ema_long_length = st.number_input("EMA Long Length", min_value=50, max_value=200, value=default_params['ema_long'], step=5)
 
     st.markdown("##### Oscillators")
     use_rsi = st.checkbox("Relative Strength Index (RSI)", value=True)
     rsi_length = st.slider(
-        "RSI Length", min_value=5, max_value=30, value=14, step=1, disabled=not use_rsi
+        "RSI Length", min_value=5, max_value=30, value=default_params['rsi_length'], step=1, disabled=not use_rsi
     )
 
     use_macd = st.checkbox("MACD", value=False)
-    macd_fast, macd_slow, macd_signal = 12, 26, 9
+    macd_fast = default_params['macd_fast']
+    macd_slow = default_params['macd_slow']
+    macd_signal = default_params['macd_signal']
     if use_macd:
         macd_col1, macd_col2 = st.columns(2)
         with macd_col1:
             macd_fast = st.number_input(
-                "Fast Length", min_value=5, max_value=30, value=12, step=1
+                "Fast Length", min_value=5, max_value=30, value=default_params['macd_fast'], step=1
             )
             macd_signal = st.number_input(
-                "Signal Length", min_value=3, max_value=15, value=9, step=1
+                "Signal Length", min_value=3, max_value=15, value=default_params['macd_signal'], step=1
             )
         with macd_col2:
             macd_slow = st.number_input(
-                "Slow Length", min_value=10, max_value=50, value=26, step=1
+                "Slow Length", min_value=10, max_value=50, value=default_params['macd_slow'], step=1
             )
 
-    use_bbands = st.checkbox("Bollinger Bands", value=False)
-    bb_length, bb_std = 20, 2.0
+    use_bbands = st.checkbox("Bollinger Bands", value=True)
+    bb_length = default_params['bb_length']
+    bb_std = default_params['bb_std']
     if use_bbands:
         bb_col1, bb_col2 = st.columns(2)
         with bb_col1:
-            bb_length = st.number_input("Length", min_value=5, max_value=50, value=20, step=1)
+            bb_length = st.number_input("Length", min_value=5, max_value=50, value=default_params['bb_length'], step=1)
         with bb_col2:
             bb_std = st.number_input(
-                "Standard Deviation", min_value=1.0, max_value=4.0, value=2.0, step=0.1
+                "Standard Deviation", min_value=1.0, max_value=4.0, value=default_params['bb_std'], step=0.1
             )
 
     st.markdown("##### Additional Indicators")
     use_stoch = st.checkbox("Stochastic Oscillator", value=False)
-    stoch_k, stoch_d = 14, 3
+    stoch_k = default_params['stoch_k']
+    stoch_d = default_params['stoch_d']
     if use_stoch:
         stoch_col1, stoch_col2 = st.columns(2)
         with stoch_col1:
-            stoch_k = st.number_input("K Length", min_value=5, max_value=30, value=14, step=1)
+            stoch_k = st.number_input("K Length", min_value=5, max_value=30, value=default_params['stoch_k'], step=1)
         with stoch_col2:
-            stoch_d = st.number_input("D Length", min_value=1, max_value=10, value=3, step=1)
+            stoch_d = st.number_input("D Length", min_value=1, max_value=10, value=default_params['stoch_d'], step=1)
 
     use_adx = st.checkbox("Average Directional Index (ADX)", value=False)
     adx_length = st.slider(
-        "ADX Length", min_value=5, max_value=30, value=14, step=1, disabled=not use_adx
+        "ADX Length", min_value=5, max_value=30, value=default_params['adx_length'], step=1, disabled=not use_adx
     )
 
     use_willr = st.checkbox("Williams %R", value=False)
@@ -310,20 +464,30 @@ with st.sidebar:
         "Williams %R Length",
         min_value=5,
         max_value=30,
-        value=14,
+        value=default_params['willr_length'],
         step=1,
         disabled=not use_willr,
     )
 
     st.subheader("Visualization Settings")
+    use_candlestick = st.checkbox("Use Candlestick Chart", value=True)
     fig_width = st.slider("Figure Width", min_value=8, max_value=20, value=12, step=1)
-    fig_height = st.slider("Figure Height", min_value=6, max_value=16, value=8, step=1)
+    fig_height = st.slider("Figure Height (per subplot)", min_value=3, max_value=8, value=4, step=1)
+    
+    # Real-time update settings
+    st.subheader("Real-time Updates")
+    enable_real_time = st.checkbox("Enable Real-time Updates", value=False)
+    update_interval = 60  # Default value
+    if enable_real_time:
+        update_interval = st.slider("Update Interval (seconds)", min_value=10, max_value=300, value=60, step=10)
 
 indicator_configs = prepare_indicator_configs(
     use_sma,
-    sma_length,
+    sma_short_length if use_sma else 20,
+    sma_long_length if use_sma else 50,
     use_ema,
-    ema_length,
+    ema_short_length if use_ema else 12,
+    ema_long_length if use_ema else 26,
     use_rsi,
     rsi_length,
     use_macd,
@@ -342,245 +506,197 @@ indicator_configs = prepare_indicator_configs(
     willr_length,
 )
 
-# --- Single Symbol Analysis ---
-with tab_single:
-    st.subheader("Single Symbol Technical Analysis")
-    st.caption("Run a full indicator suite for the primary symbol selected in the sidebar.")
+# Process symbols
+multi_symbols = parse_symbol_list(multi_symbols_raw, symbol)
+if symbol:
+    comparison_symbols = [symbol] + [s for s in multi_symbols if s != symbol]
+else:
+    comparison_symbols = multi_symbols
 
-    analyze_single = st.button("Run Single Analysis", type="primary", key="analyze_single")
+# Analysis button
+analyze_button = st.button("Run Analysis", type="primary", key="analyze")
 
-    if analyze_single:
-        if not symbol:
-            st.warning("Please provide a valid primary stock symbol before running the analysis.")
-        else:
-            with st.spinner(f"Fetching data for {symbol}..."):
-                data_fetcher = DataFetcher(use_vectorbt=False)
-                data = data_fetcher.fetch_data([symbol], period=period_value, interval=interval_value)
+# Real-time update placeholder
+real_time_placeholder = st.empty()
 
-            if symbol in data and not data[symbol].empty:
-                st.session_state.single_data = data[symbol]
-                st.session_state.single_symbol = symbol
-                st.session_state.single_company = data_fetcher.get_company_name(symbol)
-                st.session_state.pop("backtest_result", None)
-            else:
-                st.error(
-                    f"Failed to fetch data for {symbol}. Please check the symbol and try again."
-                )
-
-    if st.session_state.get("single_data") is not None:
-        stored_symbol = st.session_state.get("single_symbol")
-        company_name = st.session_state.get("single_company", stored_symbol)
-
-        if symbol and stored_symbol and symbol != stored_symbol:
-            st.info(
-                f"Showing cached results for {stored_symbol}. Update the symbol and rerun the analysis to refresh."
-            )
-
-        with st.spinner("Calculating technical indicators..."):
-            ta = TechnicalAnalysis()
-            df_with_indicators = ta.calculate_indicators(
-                st.session_state.single_data.copy(), indicator_configs
-            )
-            st.session_state.single_df = df_with_indicators
-
-        with st.spinner("Creating visualization..."):
-            visualizer = Visualizer(figsize=(fig_width, fig_height))
-            fig = visualizer.create_plot_figure(
-                df_with_indicators,
-                stored_symbol,
-                indicator_configs,
-                company_name=company_name,
-            )
-
-            buf = None
-            if fig:
-                buf = visualizer.save_figure_to_buffer(fig, format="png")
-
-        st.markdown(f"### {stored_symbol} - {company_name}")
-
-        if buf:
-            st.image(buf, use_container_width=True)
-        else:
-            st.warning(
-                "Could not generate the plot. Please review the selected indicators or try again."
-            )
-
-        with st.expander("View Indicator Data"):
-            st.dataframe(df_with_indicators)
-
-        download_col1, download_col2 = st.columns(2)
-        with download_col1:
-            csv = df_with_indicators.to_csv().encode("utf-8")
-            st.download_button(
-                label="Download CSV",
-                data=csv,
-                file_name=f"{stored_symbol}_technical_analysis.csv",
-                mime="text/csv",
-            )
-        with download_col2:
-            if buf:
-                st.download_button(
-                    label="Download Chart",
-                    data=buf,
-                    file_name=f"{stored_symbol}_technical_analysis.png",
-                    mime="image/png",
-                )
+if analyze_button or (enable_real_time and 'last_update' not in st.session_state):
+    if len(comparison_symbols) < 1:
+        st.warning("Please provide at least one ticker symbol to run the analysis.")
     else:
-        st.info(
-            "Enter a primary stock symbol and click 'Run Single Analysis' to generate technical insights."
+        with st.spinner("Fetching data for selected symbols..."):
+            data_fetcher = DataFetcher(use_vectorbt=False)
+            data = data_fetcher.fetch_data(
+                comparison_symbols, period=period_value, interval=interval_value
+            )
+
+        available_data = {
+            sym: df
+            for sym, df in data.items()
+            if df is not None and not df.empty
+        }
+        missing_symbols = [sym for sym in comparison_symbols if sym not in available_data]
+
+        if not available_data:
+            st.error(
+                "None of the requested symbols returned data. Please verify the tickers and try again."
+            )
+        else:
+            st.session_state.multi_data = available_data
+            st.session_state.multi_symbols = list(available_data.keys())
+            st.session_state.multi_companies = {
+                sym: data_fetcher.get_company_name(sym) for sym in available_data
+            }
+            st.session_state.multi_missing = missing_symbols
+            st.session_state.last_update = datetime.now()
+
+# Real-time updates
+if enable_real_time and 'multi_data' in st.session_state:
+    # Check if it's time to update
+    if 'last_update' not in st.session_state or \
+       (datetime.now() - st.session_state.last_update).seconds > update_interval:
+        
+        with real_time_placeholder.container():
+            st.info("Fetching real-time data...")
+            # Update the primary symbol with real-time data
+            if symbol in st.session_state.multi_data:
+                real_time_data = fetch_real_time_data(symbol, period="1d", interval="1m")
+                if not real_time_data.empty:
+                    # Combine historical and real-time data
+                    combined_data = pd.concat([st.session_state.multi_data[symbol], real_time_data])
+                    # Remove duplicates, keeping the latest
+                    combined_data = combined_data[~combined_data.index.duplicated(keep='last')]
+                    st.session_state.multi_data[symbol] = combined_data
+                    st.session_state.last_update = datetime.now()
+                    st.success("Real-time data updated!")
+                else:
+                    st.warning("Could not fetch real-time data.")
+            else:
+                st.warning("Primary symbol not found in data.")
+
+# Display results if data is available
+multi_data = st.session_state.get("multi_data", {})
+
+if multi_data:
+    if st.session_state.get("multi_missing"):
+        missing_display = ", ".join(st.session_state["multi_missing"])
+        st.warning(f"Data could not be retrieved for: {missing_display}")
+
+    ta = TechnicalAnalysis()
+    visualizer = Visualizer(figsize=(fig_width, fig_height))
+
+    summary_rows = []
+    indicator_frames = {}
+
+    for sym, df in multi_data.items():
+        df_with_indicators = ta.calculate_indicators(df.copy(), indicator_configs)
+        indicator_frames[sym] = df_with_indicators
+
+        last_close, period_return, volatility = summarize_performance(df_with_indicators)
+        summary_rows.append(
+            {
+                "Symbol": sym,
+                "Company": st.session_state.multi_companies.get(sym, sym),
+                "Last Close": last_close,
+                "Period Return (%)": period_return * 100 if not np.isnan(period_return) else np.nan,
+                "Annualized Volatility (%)": volatility * 100 if not np.isnan(volatility) else np.nan,
+            }
         )
 
-# --- Multi Symbol Analysis ---
-with tab_multi:
-    st.subheader("Multi-Symbol Dashboard")
-    st.caption(
-        "Compare the primary symbol with additional tickers, visualize indicators, and review key metrics side-by-side."
+    summary_df = pd.DataFrame(summary_rows)
+    summary_df = summary_df.set_index("Symbol")
+    st.markdown("#### Performance Snapshot")
+    st.dataframe(
+        summary_df.style.format(
+            {
+                "Last Close": "${:,.2f}",
+                "Period Return (%)": "{:.2f}%",
+                "Annualized Volatility (%)": "{:.2f}%",
+            }
+        )
     )
 
-    multi_symbols = parse_symbol_list(multi_symbols_raw, symbol)
-    if symbol:
-        comparison_symbols = [symbol] + [s for s in multi_symbols if s != symbol]
-    else:
-        comparison_symbols = multi_symbols
-
-    analyze_multi = st.button("Run Multi-Symbol Analysis", key="analyze_multi")
-
-    if analyze_multi:
-        if len(comparison_symbols) < 2:
-            st.warning(
-                "Provide at least two distinct ticker symbols (including the primary symbol) to run the dashboard."
-            )
-        else:
-            with st.spinner("Fetching data for selected symbols..."):
-                data_fetcher = DataFetcher(use_vectorbt=False)
-                data = data_fetcher.fetch_data(
-                    comparison_symbols, period=period_value, interval=interval_value
-                )
-
-            available_data = {
-                sym: df
-                for sym, df in data.items()
-                if df is not None and not df.empty
-            }
-            missing_symbols = [sym for sym in comparison_symbols if sym not in available_data]
-
-            if not available_data:
-                st.error(
-                    "None of the requested symbols returned data. Please verify the tickers and try again."
-                )
-            else:
-                st.session_state.multi_data = available_data
-                st.session_state.multi_symbols = list(available_data.keys())
-                st.session_state.multi_companies = {
-                    sym: data_fetcher.get_company_name(sym) for sym in available_data
-                }
-                st.session_state.multi_missing = missing_symbols
-
-    multi_data = st.session_state.get("multi_data", {})
-
-    if multi_data:
-        if st.session_state.get("multi_missing"):
-            missing_display = ", ".join(st.session_state["multi_missing"])
-            st.warning(f"Data could not be retrieved for: {missing_display}")
-
-        ta = TechnicalAnalysis()
-        visualizer = Visualizer(figsize=(fig_width, fig_height))
-
-        summary_rows = []
-        indicator_frames = {}
-
-        for sym, df in multi_data.items():
-            df_with_indicators = ta.calculate_indicators(df.copy(), indicator_configs)
-            indicator_frames[sym] = df_with_indicators
-
-            last_close, period_return, volatility = summarize_performance(df_with_indicators)
-            summary_rows.append(
-                {
-                    "Symbol": sym,
-                    "Company": st.session_state.multi_companies.get(sym, sym),
-                    "Last Close": last_close,
-                    "Period Return (%)": period_return * 100 if not np.isnan(period_return) else np.nan,
-                    "Annualized Volatility (%)": volatility * 100 if not np.isnan(volatility) else np.nan,
-                }
-            )
-
-        summary_df = pd.DataFrame(summary_rows)
-        summary_df = summary_df.set_index("Symbol")
-        st.markdown("#### Performance Snapshot")
-        st.dataframe(
-            summary_df.style.format(
-                {
-                    "Last Close": "${:,.2f}",
-                    "Period Return (%)": "{:.2f}%",
-                    "Annualized Volatility (%)": "{:.2f}%",
-                }
-            )
-        )
-
-        st.markdown("#### Indicator Views")
+    st.markdown("#### Indicator Views")
+    
+    # Create tabs for each symbol
+    if len(indicator_frames) > 1:
         symbol_tabs = st.tabs([sym for sym in indicator_frames.keys()])
+        tab_iter = zip(indicator_frames.items(), symbol_tabs)
+    else:
+        # If only one symbol, don't use tabs
+        tab_iter = [(list(indicator_frames.items())[0], None)]
+    
+    for (sym, df_with_indicators), symbol_tab in tab_iter:
+        with (symbol_tab or st.container()):
+            company_name = st.session_state.multi_companies.get(sym, sym)
+            st.markdown(f"**{sym} - {company_name}**")
 
-        for (sym, df_with_indicators), symbol_tab in zip(
-            indicator_frames.items(), symbol_tabs
-        ):
-            with symbol_tab:
-                company_name = st.session_state.multi_companies.get(sym, sym)
-                st.markdown(f"**{sym} - {company_name}**")
-
+            # Create and display the plot
+            with st.spinner("Creating visualization..."):
                 fig = visualizer.create_plot_figure(
                     df_with_indicators,
                     sym,
                     indicator_configs,
                     company_name=company_name,
+                    use_candlestick=use_candlestick
                 )
 
-                buf = None
-                if fig:
-                    buf = visualizer.save_figure_to_buffer(fig, format="png")
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("Plot generation failed for this symbol.")
 
-                if buf:
-                    st.image(buf, use_container_width=True)
-                    st.download_button(
-                        label=f"Download {sym} Chart",
-                        data=buf,
-                        file_name=f"{sym}_technical_analysis.png",
-                        mime="image/png",
-                        key=f"download_{sym}_chart",
-                    )
-                else:
-                    st.warning("Plot generation failed for this symbol.")
+            # Data and download section
+            with st.expander("Show indicator data"):
+                st.dataframe(df_with_indicators)
 
-                with st.expander("Show indicator data"):
-                    st.dataframe(df_with_indicators)
-
+            col1, col2 = st.columns(2)
+            with col1:
                 csv = df_with_indicators.to_csv().encode("utf-8")
                 st.download_button(
                     label=f"Download {sym} CSV",
                     data=csv,
                     file_name=f"{sym}_technical_analysis.csv",
                     mime="text/csv",
-                    key=f"download_{sym}_csv",
+                    key=f"download_{sym}_csv_{int(time.time())}",  # Add timestamp to key to avoid conflicts
                 )
-    else:
-        st.info(
-            "Add comparison symbols in the sidebar and click 'Run Multi-Symbol Analysis' to build the dashboard."
-        )
+            with col2:
+                if fig:
+                    # Convert Plotly figure to HTML for download
+                    html_string = fig.to_html(include_plotlyjs='cdn')
+                    st.download_button(
+                        label=f"Download {sym} Chart",
+                        data=html_string,
+                        file_name=f"{sym}_technical_analysis.html",
+                        mime="text/html",
+                        key=f"download_{sym}_chart_{int(time.time())}",  # Add timestamp to key to avoid conflicts
+                    )
+else:
+    st.info(
+        "Enter stock symbols in the sidebar and click 'Run Analysis' to generate technical insights."
+    )
 
 # --- Backtesting ---
-with tab_backtest:
+with st.expander("Backtest Trading Strategies", expanded=False):
     st.subheader("Backtest Trading Strategies")
     st.caption(
         "Evaluate rule-based strategies using the primary symbol's historical data and review performance metrics."
     )
 
-    if st.session_state.get("single_data") is None:
-        st.info("Run a single-symbol analysis first to load price history for backtesting.")
+    if st.session_state.get("multi_data") is None or symbol not in st.session_state.get("multi_data", {}):
+        st.info("Run an analysis first to load price history for backtesting.")
     else:
         strategy_type = st.selectbox(
             "Strategy Type",
             ["Moving Average Crossover", "RSI Strategy"],
             key="strategy_type",
         )
+
+        # Initialize variables with default values
+        ma_short = 20
+        ma_long = 50
+        rsi_bt_length = 14
+        rsi_oversold = 30
+        rsi_overbought = 70
 
         if strategy_type == "Moving Average Crossover":
             ma_short = st.slider(
@@ -621,49 +737,47 @@ with tab_backtest:
         run_backtest = st.button("Run Backtest", type="primary", key="run_backtest_btn")
 
         if run_backtest:
-            from src.backtesting.engine import BacktestEngine
-            from src.backtesting.strategy import (
-                MovingAverageCrossoverStrategy,
-                RSIStrategy,
-            )
-
-            engine = BacktestEngine(use_vectorbt=False)
-
-            if strategy_type == "Moving Average Crossover":
-                strategy = MovingAverageCrossoverStrategy(
-                    short_window=ma_short,
-                    long_window=ma_long,
-                    name=f"MA_{ma_short}_{ma_long}",
-                )
-                strategy_label = f"Moving Average Crossover (Short: {ma_short}, Long: {ma_long})"
-            else:
-                strategy = RSIStrategy(
-                    rsi_period=rsi_bt_length,
-                    oversold=rsi_oversold,
-                    overbought=rsi_overbought,
-                    name=f"RSI_{rsi_bt_length}_{rsi_oversold}_{rsi_overbought}",
-                )
-                strategy_label = (
-                    f"RSI Strategy (Period: {rsi_bt_length}, Oversold: {rsi_oversold}, Overbought: {rsi_overbought})"
-                )
-
             with st.spinner("Running backtest..."):
-                result = engine.run_backtest(
+                # Get data for primary symbol
+                primary_data = st.session_state.multi_data[symbol]
+
+                # Create strategy based on selected type
+                if strategy_type == "Moving Average Crossover":
+                    strategy = MovingAverageCrossoverStrategy(
+                        short_length=ma_short,
+                        long_length=ma_long
+                    )
+                    strategy_label = f"MA Crossover ({ma_short}/{ma_long})"
+                else:  # RSI Strategy
+                    strategy = RSIStrategy(
+                        rsi_length=rsi_bt_length,
+                        oversold=rsi_oversold,
+                        overbought=rsi_overbought
+                    )
+                    strategy_label = f"RSI ({rsi_bt_length}, {rsi_oversold}/{rsi_overbought})"
+
+                # Run backtest
+                engine = BacktestEngine(use_vectorbt=False)
+                result = engine.run(
+                    df=primary_data,
                     strategy=strategy,
-                    data=st.session_state.single_data,
                     initial_capital=initial_capital,
                     commission=commission,
                 )
 
-            st.session_state.backtest_result = {
-                "result": result,
-                "strategy": strategy,
-                "strategy_label": strategy_label,
-            }
+                # Store results in session state
+                st.session_state.backtest_result = {
+                    "result": result,
+                    "strategy": strategy,
+                    "strategy_label": strategy_label,
+                    "figure": None,  # Will be generated on demand
+                }
+
+                st.success("Backtest completed!")
 
         if st.session_state.get("backtest_result"):
-            stored_symbol = st.session_state.get("single_symbol", symbol)
-            company_name = st.session_state.get("single_company", stored_symbol)
+            stored_symbol = symbol
+            company_name = st.session_state.multi_companies.get(symbol, symbol) if 'multi_companies' in st.session_state else stored_symbol
             result_payload = st.session_state.backtest_result
             result = result_payload["result"]
             strategy = result_payload["strategy"]
@@ -672,7 +786,7 @@ with tab_backtest:
             st.markdown(f"### Backtest Results: {stored_symbol} - {company_name}")
             st.write(f"Strategy: {strategy_label}")
 
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("Total Return", f"{result['total_return']:.2%}")
             with col2:
@@ -684,6 +798,14 @@ with tab_backtest:
                     st.metric("Win Rate", f"{result['win_rate']:.2%}")
                 else:
                     st.metric("Win Rate", "N/A")
+            with col5:
+                profit_factor = result.get("profit_factor", 0)
+                if profit_factor == np.inf:
+                    st.metric("Profit Factor", "∞")
+                elif profit_factor is not None:
+                    st.metric("Profit Factor", f"{profit_factor:.2f}")
+                else:
+                    st.metric("Profit Factor", "N/A")
 
             fig = result_payload.get("figure")
             if fig is None:
@@ -697,9 +819,8 @@ with tab_backtest:
 
             st.subheader("Trade Details")
             trades = result.get("trades")
-            if hasattr(trades, "records") and len(trades.records) > 0:
-                trades_df = trades.records
-                st.dataframe(trades_df)
+            if isinstance(trades, pd.DataFrame) and not trades.empty:
+                st.dataframe(trades)
             else:
                 st.info("No trades were executed during the backtest period.")
 
@@ -712,6 +833,7 @@ with tab_backtest:
                 data=csv,
                 file_name=f"{stored_symbol}_{strategy.name}_signals.csv",
                 mime="text/csv",
+                key=f"download_signals_{int(time.time())}",  # Add timestamp to key to avoid conflicts
             )
 
 st.markdown("---")
