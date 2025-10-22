@@ -63,3 +63,8 @@ debugging/
 
 # LLM
 .claude
+.cursor
+.codex
+
+# mcp
+.pyscn
