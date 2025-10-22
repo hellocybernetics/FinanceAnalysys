@@ -646,14 +646,24 @@ elif analysis_mode == "⚖️ 銘柄比較":
     if st.session_state.analysis_results:
         # 比較表作成
         comparison_data = []
+        company_names: dict[str, str] = {}
         for symbol in symbols:
             tech_result = st.session_state.analysis_results['technical'].get(symbol)
             fund_result = st.session_state.analysis_results['fundamental'].get(symbol)
 
+            company_name = None
+            if fund_result and getattr(fund_result, "company_info", None):
+                company_name = fund_result.company_info.name
+
+            if company_name:
+                company_names[symbol] = company_name
+            else:
+                company_names.setdefault(symbol, symbol)
+
             if tech_result and fund_result:
                 row = {
                     '銘柄': symbol,
-                    '企業名': fund_result.company_info.name,
+                    '企業名': company_names[symbol],
                     '株価': f"${tech_result.summary.latest_price:.2f}",
                     '変化率': f"{tech_result.summary.price_change_pct:+.2f}%",
                 }
@@ -706,11 +716,12 @@ elif analysis_mode == "⚖️ 銘柄比較":
                     if series.empty:
                         continue
 
+                    trace_label = company_names.get(symbol, symbol)
                     perf_fig.add_trace(go.Scatter(
                         x=series.index,
                         y=series.values,
                         mode='lines',
-                        name=symbol,
+                        name=trace_label,
                         line=dict(width=2)
                     ))
 
@@ -733,8 +744,10 @@ elif analysis_mode == "⚖️ 銘柄比較":
                     focus_symbol = st.selectbox(
                         "比較対象銘柄",
                         options=focus_options,
-                        index=focus_options.index(default_focus)
+                        index=focus_options.index(default_focus),
+                        format_func=lambda sym: company_names.get(sym, sym)
                     )
+                    focus_label = company_names.get(focus_symbol, focus_symbol)
 
                     peer_symbols = [s for s in normalized_series.keys() if s != focus_symbol]
 
@@ -750,7 +763,7 @@ elif analysis_mode == "⚖️ 銘柄比較":
                                 x=diff_series.index,
                                 y=diff_series.values,
                                 mode='lines',
-                                name=f"{focus_symbol} - ピア平均",
+                                name=f"{focus_label} - ピア平均",
                                 line=dict(width=2, color="#1f77b4"),
                                 fill='tozeroy',
                                 fillcolor='rgba(31, 119, 180, 0.25)'
@@ -758,7 +771,7 @@ elif analysis_mode == "⚖️ 銘柄比較":
                             diff_fig.add_hline(y=0, line_dash="dash", line_color="gray")
 
                             diff_fig.update_layout(
-                                title=f"{focus_symbol} vs ピア平均（正規化価格差）",
+                                title=f"{focus_label} vs ピア平均（正規化価格差）",
                                 xaxis_title="日付",
                                 yaxis_title="差分",
                                 height=320,
