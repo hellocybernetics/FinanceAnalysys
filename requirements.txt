@@ -517,10 +517,6 @@ pytz==2025.2
     #   pandas
     #   vectorbt
     #   yfinance
-pywin32==311
-    # via
-    #   docker
-    #   mcp
 pyyaml==6.0.3
     # via
     #   financeanalysispy (pyproject.toml)
@@ -628,8 +624,6 @@ streamlit==1.50.0
     # via financeanalysispy (pyproject.toml)
 sympy==1.14.0
     # via torch
-lib/ta_lib-0.6.3-cp313-cp313-win_amd64.whl
-    # via financeanalysispy (pyproject.toml)
 tenacity==9.1.2
     # via
     #   financeanalysispy (pyproject.toml)

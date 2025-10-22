@@ -83,18 +83,3 @@ dependencies = [
     "widgetsnbextension==4.0.13",
     "yfinance>=0.2.55",
 ]
-
-[project.optional-dependencies]
-# Optional TA-Lib support for advanced technical indicators
-# Note: Requires platform-specific wheels or system installation
-talib = [
-    "ta-lib>=0.4.0",
-]
-
-[tool.uv.sources]
-# Platform-specific ta-lib wheels (optional dependency)
-# To install: uv sync --extra talib
-# Windows: uses pre-built wheel in lib/
-# Linux: requires system ta-lib C library installation first
-#        See: https://github.com/TA-Lib/ta-lib-python#installation
-ta-lib = { path = "lib/ta_lib-0.6.3-cp313-cp313-win_amd64.whl", marker = "sys_platform == 'win32'" }

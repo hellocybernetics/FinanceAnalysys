@@ -70,7 +70,7 @@
 FinanceAnalysisPy/
 ├── config/                 # 設定ファイル (例: analysis_config.yaml)
 ├── credentials/            # 認証情報 (例: twitter_config.json)
-├── lib/                    # 外部ライブラリ (ta-lib)
+├── lib/                    # （任意）外部ライブラリ配置用
 ├── output/                 # データ保存、分析結果
 ├── projects/               # バックテスト/トレードのDockerプロジェクト
 ├── scripts/                # 実行スクリプト (例: run_analysis.py)

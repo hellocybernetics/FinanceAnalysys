@@ -77,19 +77,10 @@ TA-Libは**オプショナル依存関係**として設定されています。�
 
 必要に応じてインストールする場合：
 
-```bash
-# Windowsの場合（プリビルドホイール使用）
-uv sync --extra talib
-
-# Linuxの場合（システムライブラリが必要）
-# 1. システムTA-Libライブラリをインストール
-sudo apt-get install ta-lib
-
-# 2. Pythonバインディングをインストール
-uv sync --extra talib
-# または
-pip install ta-lib
-```
+> 📝 **TA-Lib について**
+>
+> デフォルト構成では TA-Lib を使用していません。高度な一部の指標で TA-Lib を有効にしたい場合のみ、
+> 各自の環境に合わせて `pip install ta-lib` などで追加してください。
 
 ## 💻 使用方法
 
