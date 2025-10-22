@@ -1,5 +1,5 @@
 """
-バックテストを実行するためのサンプルスクリプト
+CLI script for running backtests using the new service architecture.
 """
 
 import os
@@ -9,7 +9,15 @@ import json
 import argparse
 from datetime import datetime
 import logging
-import matplotlib.pyplot as plt
+from pathlib import Path
+from typing import Optional
+
+# Add parent directory to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.backtesting.engine import BacktestEngine
+from src.backtesting.strategy import MovingAverageCrossoverStrategy, RSIStrategy
+from src.data.data_fetcher import DataFetcher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,49 +25,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.backtesting.engine import BacktestEngine
-from src.backtesting.strategy import MovingAverageCrossoverStrategy, RSIStrategy
-
-def load_config(config_path):
+def load_config(config_path: str) -> dict:
     """
-    YAMLまたはJSONからコンフィグを読み込む
-    
+    Load configuration from YAML or JSON file.
+
     Args:
-        config_path (str): コンフィグファイルのパス
-        
+        config_path: Path to configuration file
+
     Returns:
-        dict: 設定辞書
+        Configuration dictionary
     """
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
-    
+
     file_ext = os.path.splitext(config_path)[1].lower()
-    
-    if file_ext == '.yaml' or file_ext == '.yml':
+
+    if file_ext in ['.yaml', '.yml']:
         with open(config_path, 'r', encoding='utf-8') as file:
-            config = yaml.safe_load(file)
+            return yaml.safe_load(file)
     elif file_ext == '.json':
         with open(config_path, 'r', encoding='utf-8') as file:
-            config = json.load(file)
+            return json.load(file)
     else:
         raise ValueError(f"Unsupported configuration file format: {file_ext}")
-    
-    return config
 
-def run_backtest(config_path=None, use_vectorbt=True, output_dir=None):
+
+def run_backtest(config_path: Optional[str] = None, output_dir: Optional[str] = None):
     """
-    コンフィグに基づいてバックテストを実行する
-    
+    Run backtests using the service layer.
+
     Args:
-        config_path (str): コンフィグファイルのパス
-        use_vectorbt (bool): データ取得にvectorbtを使用するかどうか
-        output_dir (str): 結果の出力ディレクトリ
-        
-    Returns:
-        dict: 各シンボルのバックテスト結果
+        config_path: Path to configuration file (uses default config if None)
+        output_dir: Output directory for results
     """
+    # Default configuration
     default_config = {
         'data': {
             'symbols': ['AAPL'],
@@ -70,14 +70,14 @@ def run_backtest(config_path=None, use_vectorbt=True, output_dir=None):
             {
                 'name': 'MA_Crossover',
                 'params': {
-                    'short_window': 20,
-                    'long_window': 50
+                    'short_length': 20,
+                    'long_length': 50
                 }
             },
             {
                 'name': 'RSI',
                 'params': {
-                    'rsi_period': 14,
+                    'rsi_length': 14,
                     'oversold': 30,
                     'overbought': 70
                 }
@@ -88,12 +88,11 @@ def run_backtest(config_path=None, use_vectorbt=True, output_dir=None):
             'commission': 0.001
         },
         'visualization': {
-            'output_dir': 'output',
-            'figsize': [12, 10],
-            'show_plots': False
+            'output_dir': 'output'
         }
     }
-    
+
+    # Load and merge config
     config = default_config
     if config_path:
         loaded_config = load_config(config_path)
@@ -105,132 +104,174 @@ def run_backtest(config_path=None, use_vectorbt=True, output_dir=None):
             config['backtest'].update(loaded_config['backtest'])
         if 'visualization' in loaded_config:
             config['visualization'].update(loaded_config['visualization'])
-    
+
+    # Extract config values
     symbols = config['data']['symbols']
     period = config['data']['period']
     interval = config['data']['interval']
     strategies_config = config['strategies']
-    
+    initial_capital = config['backtest'].get('initial_capital', 10000)
+    commission = config['backtest'].get('commission', 0.001)
+
+    # Setup output directory
     if output_dir is None:
         output_dir = config['visualization'].get('output_dir', 'output')
-    
+
     if not os.path.isabs(output_dir):
         output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', output_dir))
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    data_dir = os.path.join(output_dir, 'data')
-    os.makedirs(data_dir, exist_ok=True)
-    
+
     results_dir = os.path.join(output_dir, 'backtest_results')
     os.makedirs(results_dir, exist_ok=True)
-    
-    engine = BacktestEngine(use_vectorbt=use_vectorbt)
-    
+
+    # Initialize services
+    data_fetcher = DataFetcher()
+    backtest_engine = BacktestEngine()
+
+    # Fetch data
     logger.info(f"Fetching data for {len(symbols)} symbols...")
-    data = engine.fetch_data(symbols, period=period, interval=interval)
-    
+    try:
+        data = data_fetcher.fetch_data(symbols, period=period, interval=interval)
+    except Exception as e:
+        logger.error(f"Data fetch failed: {e}")
+        sys.exit(1)
+
     all_results = {}
-    
+
+    # Run backtests for each symbol
     for symbol, df in data.items():
-        logger.info(f"\nProcessing {symbol}...")
-        
-        company_name = engine.data_fetcher.get_company_name(symbol)
-        logger.info(f"Company name: {company_name}")
-        
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Processing {symbol}")
+        logger.info(f"{'='*60}")
+
+        company_name = data_fetcher.get_company_name(symbol)
+        logger.info(f"Company: {company_name}")
+
         symbol_results = {}
-        
+
+        # Test each strategy
         for strategy_config in strategies_config:
             strategy_name = strategy_config['name']
             params = strategy_config.get('params', {})
-            
-            logger.info(f"Running backtest with strategy '{strategy_name}'")
-            
-            if strategy_name == 'MA_Crossover':
-                short_window = params.get('short_window', 20)
-                long_window = params.get('long_window', 50)
+
+            logger.info(f"\nRunning backtest with strategy: {strategy_name}")
+
+            strategy_key = strategy_name.lower()
+            strategy = None
+            if strategy_key in {"ma_crossover", "moving_average_crossover", "ma"}:
+                short_length = params.get('short_length', params.get('short_window', 20))
+                long_length = params.get('long_length', params.get('long_window', 50))
                 strategy = MovingAverageCrossoverStrategy(
-                    short_window=short_window,
-                    long_window=long_window,
-                    name=f"MA_{short_window}_{long_window}"
+                    short_length=short_length,
+                    long_length=long_length
                 )
-            elif strategy_name == 'RSI':
-                rsi_period = params.get('rsi_period', 14)
+            elif strategy_key in {"rsi"}:
+                rsi_length = params.get('rsi_length', params.get('rsi_period', 14))
                 oversold = params.get('oversold', 30)
                 overbought = params.get('overbought', 70)
                 strategy = RSIStrategy(
-                    rsi_period=rsi_period,
+                    rsi_length=rsi_length,
                     oversold=oversold,
-                    overbought=overbought,
-                    name=f"RSI_{rsi_period}_{oversold}_{overbought}"
+                    overbought=overbought
                 )
             else:
                 logger.warning(f"Strategy '{strategy_name}' not implemented, skipping...")
                 continue
-            
-            initial_capital = config['backtest'].get('initial_capital', 10000)
-            commission = config['backtest'].get('commission', 0.001)
-            
-            result = engine.run_backtest(
-                strategy=strategy,
-                data=df,
-                initial_capital=initial_capital,
-                commission=commission
-            )
-            
-            result_paths = engine.save_results(
-                result=result,
-                symbol=symbol,
-                strategy_name=strategy.name,
-                output_dir=results_dir
-            )
-            
-            logger.info(f"Strategy: {strategy.name}")
+
+            # Run backtest
+            try:
+                result = backtest_engine.run(
+                    df=df,
+                    strategy=strategy,
+                    initial_capital=initial_capital,
+                    commission=commission
+                )
+            except Exception as e:
+                logger.error(f"Backtest failed for {symbol} with {strategy_name}: {e}")
+                continue
+
+            # Display results
+            logger.info(f"\nStrategy: {strategy.name}")
             logger.info(f"Total Return: {result['total_return']:.2%}")
             logger.info(f"Sharpe Ratio: {result['sharpe_ratio']:.4f}")
             logger.info(f"Max Drawdown: {result['max_drawdown']:.2%}")
-            if result['win_rate'] is not None:
+            if result.get('win_rate') is not None:
                 logger.info(f"Win Rate: {result['win_rate']:.2%}")
-            logger.info(f"Results saved to: {result_paths['chart']}")
-            
+            logger.info(f"Total Trades: {result.get('total_trades', 0)}")
+
+            # Save visualization
+            try:
+                fig = backtest_engine.visualize_results(
+                    result=result,
+                    symbol=symbol,
+                    strategy_name=strategy.name
+                )
+
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                clean_symbol = symbol.replace('/', '-').replace('^', '')
+                chart_path = os.path.join(
+                    results_dir,
+                    f"{clean_symbol}_{strategy.name}_{timestamp}.png"
+                )
+
+                fig.savefig(chart_path, dpi=300, bbox_inches='tight')
+                logger.info(f"Saved backtest chart to: {chart_path}")
+
+                import matplotlib.pyplot as plt
+                plt.close(fig)
+            except Exception as e:
+                logger.error(f"Failed to save visualization: {e}")
+
+            # Store results
             symbol_results[strategy.name] = {
                 'performance': {
                     'total_return': float(result['total_return']),
                     'sharpe_ratio': float(result['sharpe_ratio']),
                     'max_drawdown': float(result['max_drawdown']),
-                    'win_rate': float(result['win_rate']) if result['win_rate'] is not None else None
-                },
-                'paths': result_paths
+                    'win_rate': float(result['win_rate']) if result.get('win_rate') is not None else None,
+                    'total_trades': result.get('total_trades', 0)
+                }
             }
-        
+
         all_results[symbol] = symbol_results
-    
-    summary_path = os.path.join(results_dir, f"backtest_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+
+    # Save summary JSON
+    summary_path = os.path.join(
+        results_dir,
+        f"backtest_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
     with open(summary_path, 'w', encoding='utf-8') as f:
         json.dump(all_results, f, indent=4)
-    
+
     logger.info(f"\nBacktest summary saved to: {summary_path}")
-    
-    return all_results
+    logger.info(f"All results saved to: {results_dir}")
+
 
 def main():
-    """
-    コマンドライン引数を解析してバックテストを実行する
-    """
-    parser = argparse.ArgumentParser(description='Run backtests based on configuration.')
-    parser.add_argument('--config', '-c', type=str, default=None,
-                        help='Path to the configuration file (YAML or JSON)')
-    parser.add_argument('--use-vectorbt', '-v', action='store_true',
-                        help='Use vectorbt for data fetching (default: yfinance)')
-    parser.add_argument('--output-dir', '-o', type=str, default=None,
-                        help='Directory to save output files to')
-    
+    """Main entry point for CLI."""
+    parser = argparse.ArgumentParser(
+        description='Run backtests using the new service architecture.'
+    )
+    parser.add_argument(
+        '--config', '-c',
+        type=str,
+        default=None,
+        help='Path to configuration file (YAML or JSON)'
+    )
+    parser.add_argument(
+        '--output-dir', '-o',
+        type=str,
+        default=None,
+        help='Directory to save output files'
+    )
+
     args = parser.parse_args()
-    
+
+    # Resolve config path if provided
     if args.config and not os.path.isabs(args.config):
         args.config = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', args.config))
-    
-    run_backtest(config_path=args.config, use_vectorbt=args.use_vectorbt, output_dir=args.output_dir)
+
+    run_backtest(config_path=args.config, output_dir=args.output_dir)
+
 
 if __name__ == '__main__':
     main()

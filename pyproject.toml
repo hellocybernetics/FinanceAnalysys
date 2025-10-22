@@ -1,7 +1,7 @@
 [project]
 name = "financeanalysispy"
 version = "0.1.0"
-description = "Add your description here"
+description = "Financial analysis system with technical and fundamental analysis services"
 readme = "README.md"
 requires-python = "==3.13.*"
 dependencies = [
@@ -29,6 +29,7 @@ dependencies = [
     "jedi==0.19.2",
     "joblib==1.4.2",
     "jupyterlab-widgets==3.0.13",
+    "kaleido>=0.2.1",
     "kiwisolver==1.4.8",
     "lean",
     "llvmlite==0.44.0",
@@ -47,6 +48,7 @@ dependencies = [
     "prettytable==3.16.0",
     "prompt-toolkit==3.0.50",
     "prophet>=1.1.6",
+    "pydantic>=2.0",
     "pure-eval==0.2.3",
     "pyarrow>=19.0.1",
     "pygments==2.19.1",
@@ -67,7 +69,6 @@ dependencies = [
     "stack-data==0.6.3",
     "statsmodels>=0.14.4",
     "streamlit>=1.45.0",
-    "ta-lib",
     "tenacity==9.1.2",
     "threadpoolctl==3.6.0",
     "torch>=2.7.0",
@@ -83,5 +84,17 @@ dependencies = [
     "yfinance>=0.2.55",
 ]
 
+[project.optional-dependencies]
+# Optional TA-Lib support for advanced technical indicators
+# Note: Requires platform-specific wheels or system installation
+talib = [
+    "ta-lib>=0.4.0",
+]
+
 [tool.uv.sources]
-ta-lib = { path = "lib/ta_lib-0.6.3-cp313-cp313-win_amd64.whl" }
+# Platform-specific ta-lib wheels (optional dependency)
+# To install: uv sync --extra talib
+# Windows: uses pre-built wheel in lib/
+# Linux: requires system ta-lib C library installation first
+#        See: https://github.com/TA-Lib/ta-lib-python#installation
+ta-lib = { path = "lib/ta_lib-0.6.3-cp313-cp313-win_amd64.whl", marker = "sys_platform == 'win32'" }

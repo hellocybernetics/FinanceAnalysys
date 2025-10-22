@@ -1,847 +1,785 @@
 """
-Streamlit app for technical analysis of financial data.
+Comprehensive Financial Analysis Dashboard
+統合財務分析ダッシュボード - Technical + Fundamental 分析の統合ビュー
 """
 
-from typing import Any
 import streamlit as st
 import pandas as pd
-import numpy as np
+from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import io
-from datetime import datetime, timedelta
-import os
-import time
-import yfinance as yf
 
-from src.analysis.technical_indicators import TechnicalAnalysis
+from src.services.technical_service import TechnicalAnalysisService
+from src.services.fundamental_service import FundamentalAnalysisService
+from src.core.models import (
+    TechnicalAnalysisRequest,
+    FundamentalAnalysisRequest,
+    IndicatorConfig
+)
 from src.visualization.visualizer import Visualizer
-from src.data.data_fetcher import DataFetcher
-from src.backtesting.engine import BacktestEngine
-from src.backtesting.strategy import MovingAverageCrossoverStrategy, RSIStrategy
+from src.visualization.export_handler import ExportHandler
+from src.utils.price_change import PriceChangeCalculator
+from src.utils.timeframes import get_intervals_for_period
 
+# ==================== プリセット銘柄セット ====================
+PRESET_DATASETS = {
+    "米国: Magnificent 7 + ETF": [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "MAGS"  # 'MAGS' = Roundhill Magnificent Seven ETF
+    ],
+    "日本: 主要企業": [
+        "7203.T",  # Toyota Motor
+        "9984.T",  # SoftBank Group
+        "8306.T",  # Mitsubishi UFJ Financial Group
+        "6758.T",  # Sony Group
+        "6501.T",  # Hitachi
+        "6861.T",  # Keyence
+        "8058.T",  # Mitsubishi Corporation
+    ],
+}
+DEFAULT_PRESET = "米国: Magnificent 7 + ETF"
+
+
+def apply_symbol_preset():
+    """セッション状態の銘柄入力をプリセットに合わせて更新する。"""
+    preset = st.session_state.get("symbol_preset")
+    if preset in PRESET_DATASETS:
+        st.session_state.symbols_input = ", ".join(PRESET_DATASETS[preset])
+# ==================== ユーティリティ ====================
+SIGNAL_COLOR_MAP = {
+    'positive': '#059669',  # bullish green (matching candlestick up)
+    'negative': '#dc2626',  # bearish red (matching candlestick down)
+    'neutral': '#64748b',   # slate gray
+}
+
+
+def classify_signal_text(signal_text: str) -> tuple[str, str]:
+    """Return (arrow, style) for a given textual signal."""
+    if not signal_text:
+        return '→', 'neutral'
+
+    lower = signal_text.lower()
+    bullish_keywords = ['bullish', 'buy', 'oversold', 'support', 'uptrend', 'long']
+    bearish_keywords = ['bearish', 'sell', 'overbought', 'resistance', 'downtrend', 'short']
+
+    if any(keyword in lower for keyword in bullish_keywords):
+        return '↑', 'positive'
+    if any(keyword in lower for keyword in bearish_keywords):
+        return '↓', 'negative'
+    if 'neutral' in lower or 'sideways' in lower or 'range' in lower:
+        return '→', 'neutral'
+    return '→', 'neutral'
+
+
+def render_signal_line(name: str, description: str) -> None:
+    arrow, style = classify_signal_text(description)
+    color = SIGNAL_COLOR_MAP.get(style, '#546e7a')
+    safe_desc = description or 'シグナル情報なし'
+    st.markdown(
+        f"""
+        <div style="padding:4px 0;">
+            <span style="color:{color}; font-weight:600;">{arrow} {name}</span><br>
+            <span style="color:#334155; font-size:0.9em;">{safe_desc}</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def evaluate_pe_ratio(pe: float | None) -> tuple[str, str, str] | None:
+    if pe is None or pe <= 0:
+        return None
+    if pe < 12:
+        return '↑', 'positive', '割安 (PER < 12)'
+    if pe <= 25:
+        return '→', 'neutral', '適正レンジ (12-25)'
+    return '↓', 'negative', '割高 (PER > 25)'
+
+
+def evaluate_pb_ratio(pb: float | None) -> tuple[str, str, str] | None:
+    if pb is None or pb <= 0:
+        return None
+    if pb < 1:
+        return '↑', 'positive', '割安 (PBR < 1)'
+    if pb <= 3:
+        return '→', 'neutral', '適正レンジ (1-3)'
+    return '↓', 'negative', '割高 (PBR > 3)'
+
+
+def evaluate_dividend_yield(div_yield: float | None) -> tuple[str, str, str] | None:
+    if div_yield is None or div_yield < 0:
+        return None
+    if div_yield >= 4:
+        return '↑', 'positive', '高配当 (>4%)'
+    if div_yield >= 1:
+        return '→', 'neutral', '平均的 (1-4%)'
+    return '↓', 'negative', '低配当 (<1%)'
+
+
+def render_valuation_line(label: str, value_text: str, evaluation: tuple[str, str, str] | None) -> None:
+    if evaluation:
+        arrow, style, note = evaluation
+        color = SIGNAL_COLOR_MAP.get(style, '#546e7a')
+        st.markdown(
+            f"""
+            <div style="padding:4px 0;">
+                <span style="color:{color}; font-weight:600;">{arrow} {label}: {value_text}</span><br>
+                <span style="color:{color}; font-size:0.85em;">{note}</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            f"<div style='padding:4px 0;'><span style='font-weight:600;'>{label}: {value_text}</span></div>",
+            unsafe_allow_html=True
+        )
+# ==================== ページ設定 ====================
 st.set_page_config(
-    page_title="Financial Technical Analysis",
-    page_icon="📈",
+    page_title="統合財務分析ダッシュボード",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-if "theme" not in st.session_state:
-    st.session_state.theme = "light"
-
-def toggle_theme():
-    """Toggle between light and dark theme."""
-    if st.session_state.theme == "light":
-        st.session_state.theme = "dark"
-    else:
-        st.session_state.theme = "light"
-
-def apply_custom_css():
-    """Apply custom CSS based on the selected theme."""
-    if st.session_state.theme == "dark":
-        st.markdown("""
-        <style>
-        .main {
-            background-color: #0E1117;
-            color: #FAFAFA;
-        }
-        .stApp {
-            background-color: #0E1117;
-        }
-        .css-1d391kg, .css-12oz5g7 {
-            background-color: #262730;
-        }
-        .st-bq {
-            background-color: #262730;
-        }
-        .st-c0 {
-            background-color: #0E1117;
-        }
-        .st-bw {
-            color: #FAFAFA;
-        }
-        .st-bs {
-            color: #FAFAFA;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <style>
-        .main {
-            background-color: #FFFFFF;
-            color: #31333F;
-        }
-        .stApp {
-            background-color: #FFFFFF;
-        }
-        .css-1d391kg, .css-12oz5g7 {
-            background-color: #F0F2F6;
-        }
-        .st-bq {
-            background-color: #F0F2F6;
-        }
-        .st-c0 {
-            background-color: #FFFFFF;
-        }
-        .st-bw {
-            color: #31333F;
-        }
-        .st-bs {
-            color: #31333F;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
-apply_custom_css()
-
-
-def prepare_indicator_configs(
-    use_sma,
-    sma_short_length,
-    sma_long_length,
-    use_ema,
-    ema_short_length,
-    ema_long_length,
-    use_rsi,
-    rsi_length,
-    use_macd,
-    macd_fast,
-    macd_slow,
-    macd_signal,
-    use_bbands,
-    bb_length,
-    bb_std,
-    use_stoch,
-    stoch_k,
-    stoch_d,
-    use_adx,
-    adx_length,
-    use_willr,
-    willr_length,
-):
-    """Build the list of indicator configuration dictionaries."""
-
-    indicators = []
-
-    if use_sma:
-        indicators.append({"name": "SMA", "params": {"length": sma_short_length}})
-        indicators.append({"name": "SMA", "params": {"length": sma_long_length}})
-
-    if use_ema:
-        indicators.append({"name": "EMA", "params": {"length": ema_short_length}})
-        indicators.append({"name": "EMA", "params": {"length": ema_long_length}})
-
-    if use_rsi:
-        indicators.append({"name": "RSI", "params": {"length": rsi_length}})
-
-    if use_macd:
-        indicators.append(
-            {
-                "name": "MACD",
-                "params": {"fast": macd_fast, "slow": macd_slow, "signal": macd_signal},
-            }
-        )
-
-    if use_bbands:
-        indicators.append(
-            {
-                "name": "BBands",
-                "params": {"length": bb_length, "std": bb_std},
-            }
-        )
-
-    if use_stoch:
-        indicators.append({"name": "Stochastic", "params": {"k": stoch_k, "d": stoch_d}})
-
-    if use_adx:
-        indicators.append({"name": "ADX", "params": {"length": adx_length}})
-
-    if use_willr:
-        indicators.append({"name": "WILLR", "params": {"length": willr_length}})
-
-    return indicators
-
-
-def sanitize_symbol(symbol):
-    """Normalize symbol strings entered by users."""
-
-    return symbol.replace(" ", "").upper()
-
-
-def get_default_params_for_period_interval(period, interval):
-    """
-    Get appropriate default parameters for technical indicators based on selected period and interval.
-    
-    Args:
-        period (str): Selected period (e.g., '1d', '1mo', '1y')
-        interval (str): Selected interval (e.g., '1m', '1h', '1d')
-        
-    Returns:
-        dict: Dictionary containing default parameters for various indicators
-    """
-    # Default parameters
-    defaults = {
-        'sma_short': 20,
-        'sma_long': 50,
-        'ema_short': 12,
-        'ema_long': 50,
-        'rsi_length': 14,
-        'macd_fast': 12,
-        'macd_slow': 26,
-        'macd_signal': 9,
-        'bb_length': 20,
-        'bb_std': 2.0,
-        'stoch_k': 14,
-        'stoch_d': 3,
-        'adx_length': 14,
-        'willr_length': 14
+# ==================== サービス初期化 ====================
+@st.cache_resource
+def get_services():
+    """サービスインスタンスを取得（キャッシュ）"""
+    return {
+        'technical': TechnicalAnalysisService(),
+        'fundamental': FundamentalAnalysisService(),
+        'visualizer': Visualizer(),
+        'export': ExportHandler()
     }
-    
-    # Adjust parameters based on period and interval
-    if period == "1d":
-        if interval in ["1m", "5m", "15m", "30m"]:
-            # For very short intervals, use shorter periods
-            defaults.update({
-                'sma_short': 50,
-                'sma_long': 100,
-                'ema_short': 50,
-                'ema_long': 100,
-                'rsi_length': 7,
-                'bb_length': 10,
-                'stoch_k': 7,
-                'adx_length': 7,
-                'willr_length': 7
-            })
-        elif interval == "1h":
-            # For hourly data, use moderate periods
-            defaults.update({
-                'sma_short': 50,
-                'sma_long': 100,
-                'ema_short': 50,
-                'ema_long': 100,
-                'rsi_length': 10,
-                'bb_length': 15,
-                'stoch_k': 10,
-                'adx_length': 10,
-                'willr_length': 10
-            })
-    elif period in ["1mo", "3mo"]:
-        # For monthly data, use moderate periods
-        defaults.update({
-            'sma_short': 50,
-            'sma_long': 100,
-            'ema_short': 50,
-            'ema_long': 100,
-            'rsi_length': 10,
-            'bb_length': 15,
-            'stoch_k': 10,
-            'adx_length': 10,
-            'willr_length': 10
-        })
-    elif period in ["6mo", "1y", "2y"]:
-        # For longer periods, use standard periods
-        defaults.update({
-            'sma_short': 20,
-            'sma_long': 50,
-            'ema_short': 12,
-            'ema_long': 50,
-            'rsi_length': 14,
-            'bb_length': 20,
-            'stoch_k': 14,
-            'adx_length': 14,
-            'willr_length': 14
-        })
-    elif period in ["5y", "max"]:
-        # For very long periods, use longer periods
-        defaults.update({
-            'sma_short': 50,
-            'sma_long': 200,
-            'ema_short': 26,
-            'ema_long': 50,
-            'rsi_length': 14,
-            'bb_length': 20,
-            'stoch_k': 14,
-            'adx_length': 14,
-            'willr_length': 14
-        })
-        
-    return defaults
 
+services = get_services()
 
-def parse_symbol_list(raw_symbols, primary_symbol):
-    """Turn a raw comma/newline separated string into a list of unique symbols."""
+# ==================== セッション状態初期化 ====================
+if 'analysis_results' not in st.session_state:
+    st.session_state.analysis_results = None
+if 'selected_symbol' not in st.session_state:
+    st.session_state.selected_symbol = None
+if 'run_requested' not in st.session_state:
+    st.session_state.run_requested = False
+if 'indicator_configs' not in st.session_state:
+    st.session_state.indicator_configs = [
+        IndicatorConfig(name='SMA', params={'length': 20}),
+        IndicatorConfig(name='RSI', params={'length': 14}),
+        IndicatorConfig(name='MACD', params={'fast': 12, 'slow': 26, 'signal': 9}),
+    ]
+if 'price_change_period' not in st.session_state:
+    st.session_state.price_change_period = None
+if 'selected_interval' not in st.session_state:
+    st.session_state.selected_interval = '1d'
+if 'symbol_preset' not in st.session_state:
+    st.session_state.symbol_preset = DEFAULT_PRESET
+if 'symbols_input' not in st.session_state:
+    st.session_state.symbols_input = ", ".join(PRESET_DATASETS[DEFAULT_PRESET])
 
-    if not raw_symbols:
-        return []
-
-    candidates = [sanitize_symbol(s) for s in raw_symbols.replace("\n", ",").split(",")]
-    symbols = [s for s in candidates if s]
-
-    # De-duplicate while preserving order and avoiding the primary symbol twice
-    unique_symbols: list[Any] = []
-    for sym in symbols:
-        if sym and sym not in unique_symbols and sym != primary_symbol:
-            unique_symbols.append(sym)
-
-    return unique_symbols
-
-
-def summarize_performance(df):
-    """Create a summary of recent performance metrics for a dataframe."""
-
-    if df is None or df.empty or "Close" not in df.columns:
-        return np.nan, np.nan, np.nan
-
-    last_close = df["Close"].iloc[-1]
-    first_close = df["Close"].iloc[0]
-    period_return = (last_close / first_close - 1) if first_close else np.nan
-
-    daily_returns = df["Close"].pct_change().dropna()
-    annualized_volatility = daily_returns.std() * np.sqrt(252) if not daily_returns.empty else np.nan
-
-    return last_close, period_return, annualized_volatility
-
-
-def fetch_real_time_data(symbol, period="1d", interval="1m"):
-    """Fetch real-time data for a symbol."""
-    try:
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period=period, interval=interval)
-        return data
-    except Exception as e:
-        st.error(f"Error fetching real-time data for {symbol}: {e}")
-        return pd.DataFrame()
-
-
-col1, col2 = st.columns([5, 1])
-with col1:
-    st.title("📊 Financial Technical Analysis")
-with col2:
-    theme_icon = "🌙" if st.session_state.theme == "light" else "☀️"
-    st.button(theme_icon, on_click=toggle_theme, key="theme_toggle")
-
-st.markdown("Analyze single or multiple stocks, visualize indicators, and backtest trading ideas.")
-
-# Main analysis section (merged from Single Symbol and Multi-Symbol tabs)
-st.subheader("Stock Analysis")
-st.caption("Analyze one or multiple stocks with technical indicators. Enter a primary symbol and additional comparison symbols.")
-
-with st.sidebar:
-    st.header("Configuration")
-
-    raw_symbol = st.text_input(
-        "Primary Stock Symbol",
-        value="NVDA",
-        help="Enter the main ticker symbol to analyze (e.g., NVDA, TSLA, MSFT).",
-    )
-    symbol = sanitize_symbol(raw_symbol) if raw_symbol else ""
-
-    multi_symbols_raw = st.text_area(
-        "Compare Symbols",
-        value="AAPL, MSFT, GOOGL, AMZN, TSLA, META",
-        help="Provide additional ticker symbols separated by commas or new lines for multi-symbol analysis.",
-    )
-
-    st.subheader("Time Period")
-    period_options = {
-        "1 Day (Real-time)": "1d",
-        "1 Month": "1mo",
-        "3 Months": "3mo",
-        "6 Months": "6mo",
-        "1 Year": "1y",
-        "2 Years": "2y",
-        "5 Years": "5y",
-        "Max": "max",
+# ==================== カスタムCSS ====================
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 20px;
+        border-radius: 10px;
+        border-left: 5px solid #1f77b4;
     }
-    period = st.selectbox("Select Period", options=list(period_options.keys()), index=3)
-    period_value = period_options[period]
-
-    interval_options = {
-        "1 Minute (Real-time)": "1m",
-        "1 Hour": "1h",
-        "1 Day": "1d",
-        "1 Week": "1wk",
-        "1 Month": "1mo",
+    .positive {
+        color: #00c853;
+        font-weight: bold;
     }
-    
-    # Adjust interval options based on period
-    if period_value == "1d":
-        interval = st.selectbox("Select Interval", options=["1 Minute (Real-time)", "5 Minutes", "15 Minutes", "30 Minutes", "1 Hour"], index=0)
-        interval_map = {
-            "1 Minute (Real-time)": "1m",
-            "5 Minutes": "5m",
-            "15 Minutes": "15m",
-            "30 Minutes": "30m",
-            "1 Hour": "1h"
-        }
-        interval_value = interval_map[interval]
-    else:
-        interval = st.selectbox("Select Interval", options=list(interval_options.keys()), index=2)
-        interval_value = interval_options[interval]
+    .negative {
+        color: #ff1744;
+        font-weight: bold;
+    }
+    .section-header {
+        background: linear-gradient(90deg, #1f77b4 0%, #ff7f0e 100%);
+        color: white;
+        padding: 10px 20px;
+        border-radius: 5px;
+        margin: 20px 0 10px 0;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 10px 20px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-    # Get default parameters based on selected period and interval
-    default_params = get_default_params_for_period_interval(period_value, interval_value)
-    
-    st.subheader("Technical Indicators")
+# ==================== サイドバー ====================
+st.sidebar.title("📊 統合財務分析")
+st.sidebar.markdown("---")
 
-    st.markdown("##### Moving Averages")
-    use_sma = st.checkbox("Simple Moving Average (SMA)", value=True)
-    sma_short_length = default_params['sma_short']
-    sma_long_length = default_params['sma_long']
-    if use_sma:
-        sma_col1, sma_col2 = st.columns(2)
-        with sma_col1:
-            sma_short_length = st.number_input("SMA Short Length", min_value=5, max_value=100, value=default_params['sma_short'], step=5)
-        with sma_col2:
-            sma_long_length = st.number_input("SMA Long Length", min_value=50, max_value=200, value=default_params['sma_long'], step=5)
-
-    use_ema = st.checkbox("Exponential Moving Average (EMA)", value=True)
-    ema_short_length = default_params['ema_short']
-    ema_long_length = default_params['ema_long']
-    if use_ema:
-        ema_col1, ema_col2 = st.columns(2)
-        with ema_col1:
-            ema_short_length = st.number_input("EMA Short Length", min_value=5, max_value=100, value=default_params['ema_short'], step=5)
-        with ema_col2:
-            ema_long_length = st.number_input("EMA Long Length", min_value=50, max_value=200, value=default_params['ema_long'], step=5)
-
-    st.markdown("##### Oscillators")
-    use_rsi = st.checkbox("Relative Strength Index (RSI)", value=True)
-    rsi_length = st.slider(
-        "RSI Length", min_value=5, max_value=30, value=default_params['rsi_length'], step=1, disabled=not use_rsi
-    )
-
-    use_macd = st.checkbox("MACD", value=False)
-    macd_fast = default_params['macd_fast']
-    macd_slow = default_params['macd_slow']
-    macd_signal = default_params['macd_signal']
-    if use_macd:
-        macd_col1, macd_col2 = st.columns(2)
-        with macd_col1:
-            macd_fast = st.number_input(
-                "Fast Length", min_value=5, max_value=30, value=default_params['macd_fast'], step=1
-            )
-            macd_signal = st.number_input(
-                "Signal Length", min_value=3, max_value=15, value=default_params['macd_signal'], step=1
-            )
-        with macd_col2:
-            macd_slow = st.number_input(
-                "Slow Length", min_value=10, max_value=50, value=default_params['macd_slow'], step=1
-            )
-
-    use_bbands = st.checkbox("Bollinger Bands", value=True)
-    bb_length = default_params['bb_length']
-    bb_std = default_params['bb_std']
-    if use_bbands:
-        bb_col1, bb_col2 = st.columns(2)
-        with bb_col1:
-            bb_length = st.number_input("Length", min_value=5, max_value=50, value=default_params['bb_length'], step=1)
-        with bb_col2:
-            bb_std = st.number_input(
-                "Standard Deviation", min_value=1.0, max_value=4.0, value=default_params['bb_std'], step=0.1
-            )
-
-    st.markdown("##### Additional Indicators")
-    use_stoch = st.checkbox("Stochastic Oscillator", value=False)
-    stoch_k = default_params['stoch_k']
-    stoch_d = default_params['stoch_d']
-    if use_stoch:
-        stoch_col1, stoch_col2 = st.columns(2)
-        with stoch_col1:
-            stoch_k = st.number_input("K Length", min_value=5, max_value=30, value=default_params['stoch_k'], step=1)
-        with stoch_col2:
-            stoch_d = st.number_input("D Length", min_value=1, max_value=10, value=default_params['stoch_d'], step=1)
-
-    use_adx = st.checkbox("Average Directional Index (ADX)", value=False)
-    adx_length = st.slider(
-        "ADX Length", min_value=5, max_value=30, value=default_params['adx_length'], step=1, disabled=not use_adx
-    )
-
-    use_willr = st.checkbox("Williams %R", value=False)
-    willr_length = st.slider(
-        "Williams %R Length",
-        min_value=5,
-        max_value=30,
-        value=default_params['willr_length'],
-        step=1,
-        disabled=not use_willr,
-    )
-
-    st.subheader("Visualization Settings")
-    use_candlestick = st.checkbox("Use Candlestick Chart", value=True)
-    fig_width = st.slider("Figure Width", min_value=8, max_value=20, value=12, step=1)
-    fig_height = st.slider("Figure Height (per subplot)", min_value=3, max_value=8, value=4, step=1)
-    
-    # Real-time update settings
-    st.subheader("Real-time Updates")
-    enable_real_time = st.checkbox("Enable Real-time Updates", value=False)
-    update_interval = 60  # Default value
-    if enable_real_time:
-        update_interval = st.slider("Update Interval (seconds)", min_value=10, max_value=300, value=60, step=10)
-
-indicator_configs = prepare_indicator_configs(
-    use_sma,
-    sma_short_length if use_sma else 20,
-    sma_long_length if use_sma else 50,
-    use_ema,
-    ema_short_length if use_ema else 12,
-    ema_long_length if use_ema else 26,
-    use_rsi,
-    rsi_length,
-    use_macd,
-    macd_fast,
-    macd_slow,
-    macd_signal,
-    use_bbands,
-    bb_length,
-    bb_std,
-    use_stoch,
-    stoch_k,
-    stoch_d,
-    use_adx,
-    adx_length,
-    use_willr,
-    willr_length,
+# シンボル入力
+preset_options = ["カスタム"] + list(PRESET_DATASETS.keys())
+current_preset = st.session_state.get("symbol_preset", DEFAULT_PRESET)
+initial_index = preset_options.index(current_preset) if current_preset in preset_options else 0
+st.sidebar.selectbox(
+    "📚 プリセット銘柄セット",
+    preset_options,
+    index=initial_index,
+    key="symbol_preset",
+    on_change=apply_symbol_preset,
+    help="プリセットを選ぶと下の入力欄が自動で更新されます。カスタムを選んだまま編集すれば自由に追加できます。"
 )
 
-# Process symbols
-multi_symbols = parse_symbol_list(multi_symbols_raw, symbol)
-if symbol:
-    comparison_symbols = [symbol] + [s for s in multi_symbols if s != symbol]
-else:
-    comparison_symbols = multi_symbols
+symbols_input = st.sidebar.text_input(
+    "📈 分析銘柄（カンマ区切り）",
+    key="symbols_input",
+    help="複数の銘柄をカンマで区切って入力してください（例: NVDA, 7203.T）。"
+)
+symbols = [s.strip().upper() for s in symbols_input.split(',') if s.strip()]
 
-# Analysis button
-analyze_button = st.button("Run Analysis", type="primary", key="analyze")
+# 分析モード選択
+st.sidebar.markdown("### 🎯 分析モード")
+analysis_mode = st.sidebar.radio(
+    "選択してください",
+    ["🔍 統合分析", "⚖️ 銘柄比較"],
+    label_visibility="collapsed"
+)
 
-# Real-time update placeholder
-real_time_placeholder = st.empty()
+st.sidebar.markdown("---")
 
-if analyze_button or (enable_real_time and 'last_update' not in st.session_state):
-    if len(comparison_symbols) < 1:
-        st.warning("Please provide at least one ticker symbol to run the analysis.")
+# テクニカル分析パラメータ
+if analysis_mode in ["🔍 統合分析", "⚖️ 銘柄比較"]:
+    with st.sidebar.expander("📊 テクニカル分析設定", expanded=True):
+        period_options = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"]
+        default_period_index = period_options.index("1y")
+        period = st.selectbox(
+            "期間",
+            period_options,
+            index=default_period_index,
+            key="selected_period"
+        )
+
+        available_intervals = get_intervals_for_period(period)
+        stored_interval = st.session_state.get('selected_interval')
+        if stored_interval not in available_intervals:
+            stored_interval = available_intervals[0]
+            st.session_state.selected_interval = stored_interval
+
+        interval = st.selectbox(
+            "間隔",
+            available_intervals,
+            index=available_intervals.index(stored_interval),
+            key="selected_interval"
+        )
+
+# ファンダメンタル分析パラメータ
+if analysis_mode in ["🔍 統合分析", "⚖️ 銘柄比較"]:
+    with st.sidebar.expander("💼 ファンダメンタル分析設定", expanded=True):
+        include_financials = st.checkbox("財務諸表を含む", value=True)
+        include_ratios = st.checkbox("財務比率を計算", value=True)
+
+st.sidebar.markdown("---")
+
+# 実行ボタン
+run_analysis = st.sidebar.button("🚀 分析実行", type="primary", use_container_width=True)
+if run_analysis:
+    st.session_state.analysis_results = None  # 前回の結果をクリア
+    st.session_state.selected_symbol = symbols[0] if symbols else None
+    st.session_state.run_requested = True
+
+# ==================== ヘッダー ====================
+st.title("📊 統合財務分析ダッシュボード")
+st.markdown(f"**分析モード**: {analysis_mode} | **対象銘柄**: {', '.join(symbols) if symbols else '未選択'}")
+st.markdown("---")
+
+# ==================== メインコンテンツ ====================
+
+if analysis_mode == "🔍 統合分析":
+    st.markdown('<div class="section-header">🔍 統合分析 - Technical & Fundamental</div>', unsafe_allow_html=True)
+
+    if not symbols:
+        st.warning("⚠️ 分析する銘柄を入力してください")
+    elif st.session_state.run_requested:
+        with st.spinner("分析中..."):
+            try:
+                # 指標設定
+                indicator_configs = [
+                    IndicatorConfig(name='SMA', params={'length': 20}),
+                    IndicatorConfig(name='RSI', params={'length': 14}),
+                    IndicatorConfig(name='MACD', params={'fast': 12, 'slow': 26, 'signal': 9}),
+                ]
+
+                # Technical分析
+                tech_request = TechnicalAnalysisRequest(
+                    symbols=symbols,
+                    period=period,
+                    interval=interval,
+                    indicators=indicator_configs,
+                    use_cache=True
+                )
+                tech_results = services['technical'].analyze(tech_request)
+
+                # Fundamental分析
+                fund_request = FundamentalAnalysisRequest(
+                    symbols=symbols,
+                    include_financials=include_financials,
+                    include_ratios=include_ratios
+                )
+                fund_results = services['fundamental'].analyze(fund_request)
+
+                # 結果を保存
+                st.session_state.analysis_results = {
+                    'technical': {r.symbol: r for r in tech_results},
+                    'fundamental': {r.symbol: r for r in fund_results}
+                }
+                st.session_state.indicator_configs = indicator_configs  # 指標設定も保存
+                st.session_state.run_requested = False  # フラグをリセット
+
+            except Exception as e:
+                st.error(f"❌ 分析中にエラーが発生しました: {str(e)}")
+                st.session_state.run_requested = False
     else:
-        with st.spinner("Fetching data for selected symbols..."):
-            data_fetcher = DataFetcher(use_vectorbt=False)
-            data = data_fetcher.fetch_data(
-                comparison_symbols, period=period_value, interval=interval_value
-            )
+        st.info("👈 サイドバーから「🚀 分析実行」ボタンを押してください")
 
-        available_data = {
-            sym: df
-            for sym, df in data.items()
-            if df is not None and not df.empty
-        }
-        missing_symbols = [sym for sym in comparison_symbols if sym not in available_data]
-
-        if not available_data:
-            st.error(
-                "None of the requested symbols returned data. Please verify the tickers and try again."
-            )
+    # 結果表示
+    if st.session_state.analysis_results:
+        # 銘柄選択タブ
+        if len(symbols) > 1:
+            symbol_tabs = st.tabs([f"📈 {sym}" for sym in symbols])
         else:
-            st.session_state.multi_data = available_data
-            st.session_state.multi_symbols = list(available_data.keys())
-            st.session_state.multi_companies = {
-                sym: data_fetcher.get_company_name(sym) for sym in available_data
-            }
-            st.session_state.multi_missing = missing_symbols
-            st.session_state.last_update = datetime.now()
+            symbol_tabs = [st.container()]
 
-# Real-time updates
-if enable_real_time and 'multi_data' in st.session_state:
-    # Check if it's time to update
-    if 'last_update' not in st.session_state or \
-       (datetime.now() - st.session_state.last_update).seconds > update_interval:
-        
-        with real_time_placeholder.container():
-            st.info("Fetching real-time data...")
-            # Update the primary symbol with real-time data
-            if symbol in st.session_state.multi_data:
-                real_time_data = fetch_real_time_data(symbol, period="1d", interval="1m")
-                if not real_time_data.empty:
-                    # Combine historical and real-time data
-                    combined_data = pd.concat([st.session_state.multi_data[symbol], real_time_data])
-                    # Remove duplicates, keeping the latest
-                    combined_data = combined_data[~combined_data.index.duplicated(keep='last')]
-                    st.session_state.multi_data[symbol] = combined_data
-                    st.session_state.last_update = datetime.now()
-                    st.success("Real-time data updated!")
-                else:
-                    st.warning("Could not fetch real-time data.")
-            else:
-                st.warning("Primary symbol not found in data.")
+        for idx, symbol in enumerate(symbols):
+            with symbol_tabs[idx]:
+                tech_result = st.session_state.analysis_results['technical'].get(symbol)
+                fund_result = st.session_state.analysis_results['fundamental'].get(symbol)
 
-# Display results if data is available
-multi_data = st.session_state.get("multi_data", {})
+                if not tech_result or not fund_result:
+                    st.error(f"❌ {symbol} のデータ取得に失敗しました")
+                    continue
 
-if multi_data:
-    if st.session_state.get("multi_missing"):
-        missing_display = ", ".join(st.session_state["multi_missing"])
-        st.warning(f"Data could not be retrieved for: {missing_display}")
+                # ========== 企業情報ヘッダー ==========
+                # Row 1: 企業名とセクター
+                st.markdown(f"## {symbol} - {fund_result.company_info.name}")
+                if fund_result.company_info.sector:
+                    st.caption(f"🏢 {fund_result.company_info.sector} | {fund_result.company_info.industry or 'N/A'}")
 
-    ta = TechnicalAnalysis()
-    visualizer = Visualizer(figsize=(fig_width, fig_height))
+                # Row 2: 比較期間、変動、現在価格、時価総額
+                header_col1, header_col2, header_col3, header_col4 = st.columns([1, 1, 1, 1])
 
-    summary_rows = []
-    indicator_frames = {}
+                # 利用可能な変動期間を取得（価格変動計算のため事前に計算）
+                available_periods = PriceChangeCalculator.get_available_periods(period, interval)
 
-    for sym, df in multi_data.items():
-        df_with_indicators = ta.calculate_indicators(df.copy(), indicator_configs)
-        indicator_frames[sym] = df_with_indicators
+                # デフォルト値の設定
+                if st.session_state.price_change_period is None:
+                    st.session_state.price_change_period = PriceChangeCalculator.get_default_change_period(period, interval)
 
-        last_close, period_return, volatility = summarize_performance(df_with_indicators)
-        summary_rows.append(
-            {
-                "Symbol": sym,
-                "Company": st.session_state.multi_companies.get(sym, sym),
-                "Last Close": last_close,
-                "Period Return (%)": period_return * 100 if not np.isnan(period_return) else np.nan,
-                "Annualized Volatility (%)": volatility * 100 if not np.isnan(volatility) else np.nan,
-            }
-        )
+                # 変動期間選択ドロップダウン
+                period_labels = [p["label"] for p in available_periods]
+                period_values = [p["value"] for p in available_periods]
 
-    summary_df = pd.DataFrame(summary_rows)
-    summary_df = summary_df.set_index("Symbol")
-    st.markdown("#### Performance Snapshot")
-    st.dataframe(
-        summary_df.style.format(
-            {
-                "Last Close": "${:,.2f}",
-                "Period Return (%)": "{:.2f}%",
-                "Annualized Volatility (%)": "{:.2f}%",
-            }
-        )
-    )
+                # 現在の選択肢が利用可能なリストにない場合はデフォルトに戻す
+                if st.session_state.price_change_period not in period_values:
+                    st.session_state.price_change_period = period_values[0]
 
-    st.markdown("#### Indicator Views")
-    
-    # Create tabs for each symbol
-    if len(indicator_frames) > 1:
-        symbol_tabs = st.tabs([sym for sym in indicator_frames.keys()])
-        tab_iter = zip(indicator_frames.items(), symbol_tabs)
+                current_index = period_values.index(st.session_state.price_change_period)
+
+                with header_col1:
+                    selected_label = st.selectbox(
+                        "比較期間",
+                        period_labels,
+                        index=current_index,
+                        key=f"price_change_{symbol}"
+                    )
+
+                    # 選択された値を取得
+                    selected_period = period_values[period_labels.index(selected_label)]
+                    st.session_state.price_change_period = selected_period
+
+                # 動的に価格変動を計算
+                price_change, price_change_pct = PriceChangeCalculator.calculate_price_change(
+                    tech_result.data,
+                    selected_period,
+                    interval
+                )
+
+                # 価格変動がNoneの場合はデフォルト値を使用
+                if price_change is None or price_change_pct is None:
+                    price_change = tech_result.summary.price_change
+                    price_change_pct = tech_result.summary.price_change_pct
+
+                with header_col2:
+                    # 変動額（変動率）を表示
+                    change_sign = "+" if price_change >= 0 else ""
+                    st.metric(
+                        "変動",
+                        f"{change_sign}{price_change:.2f}",
+                        f"{price_change_pct:+.2f}%"
+                    )
+
+                with header_col3:
+                    st.metric("現在価格", f"${tech_result.summary.latest_price:.2f}")
+
+                with header_col4:
+                    if fund_result.company_info.market_cap:
+                        st.metric("時価総額", f"${fund_result.company_info.market_cap/1e9:.2f}B")
+
+                st.markdown("---")
+
+                # ========== メインコンテンツ：3カラム ==========
+                col_left, col_center, col_right = st.columns([1, 2, 1])
+
+                # 左カラムと、中央・右カラムを使ってチャートと詳細指標を配置
+
+                # --- 左カラム：主要指標 ---
+                with col_left:
+                    st.markdown("### 📊 主要指標")
+
+                    # テクニカルシグナル
+                    if tech_result.summary.signals:
+                        st.markdown("**📈 テクニカルシグナル**")
+                        for name, signal in tech_result.summary.signals.items():
+                            render_signal_line(name, signal)
+
+                    st.markdown("---")
+
+                    # ファンダメンタル指標
+                    if fund_result.ratios:
+                        st.markdown("**💼 バリュエーション**")
+                        val = fund_result.ratios.valuation if fund_result.ratios else None
+                        if val and val.pe_ratio:
+                            render_valuation_line("PER", f"{val.pe_ratio:.2f}", evaluate_pe_ratio(val.pe_ratio))
+                        if val and val.pb_ratio:
+                            render_valuation_line("PBR", f"{val.pb_ratio:.2f}", evaluate_pb_ratio(val.pb_ratio))
+                        if val and val.dividend_yield:
+                            render_valuation_line(
+                                "配当利回り",
+                                f"{val.dividend_yield:.2f}%",
+                                evaluate_dividend_yield(val.dividend_yield)
+                            )
+
+                        st.markdown("**📈 収益性**")
+                        prof = fund_result.ratios.profitability
+                        if prof.roe:
+                            st.metric("ROE", f"{prof.roe:.2f}%")
+                        if prof.net_margin:
+                            st.metric("純利益率", f"{prof.net_margin:.2f}%")
+
+                # --- 中央カラム：チャート ---
+                with col_center:
+                    st.markdown("### 📈 価格チャート")
+
+                    # Plotlyチャート作成
+                    fig = services['visualizer'].create_plot_figure(
+                        df=tech_result.data,
+                        symbol=symbol,
+                        indicators=[{'name': ind.name, 'params': ind.params, 'plot': ind.plot} for ind in st.session_state.indicator_configs],
+                        company_name=fund_result.company_info.name
+                    )
+
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    # ダウンロードボタン
+                    col_dl1, col_dl2 = st.columns(2)
+                    with col_dl1:
+                        csv = tech_result.data.to_csv()
+                        st.download_button(
+                            label="📥 データ(CSV)",
+                            data=csv,
+                            file_name=f"{symbol}_data_{datetime.now().strftime('%Y%m%d')}.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                    with col_dl2:
+                        if fig:
+                            html_bytes = services['export'].export_chart(fig, format='html')
+                            if html_bytes:
+                                st.download_button(
+                                    label="📥 チャート(HTML)",
+                                    data=html_bytes,
+                                    file_name=f"{symbol}_chart_{datetime.now().strftime('%Y%m%d')}.html",
+                                    mime="text/html",
+                                    use_container_width=True
+                                )
+
+                # --- 右カラム：詳細指標 ---
+                with col_right:
+                    st.markdown("### 📋 詳細指標")
+
+                    # テクニカル指標値
+                    if tech_result.summary.indicators:
+                        with st.expander("📊 テクニカル指標", expanded=True):
+                            for name, value in list(tech_result.summary.indicators.items())[:5]:
+                                st.metric(name, f"{value:.2f}")
+
+                    # 財務比率
+                    if fund_result.ratios:
+                        with st.expander("💼 財務比率", expanded=True):
+                            liq = fund_result.ratios.liquidity
+                            lev = fund_result.ratios.leverage
+
+                            if liq.current_ratio:
+                                st.metric("流動比率", f"{liq.current_ratio:.2f}")
+                            if lev.debt_to_equity:
+                                st.metric("負債比率", f"{lev.debt_to_equity:.2f}")
+
+                # ========== 詳細タブ ==========
+                st.markdown("---")
+                detail_tabs = st.tabs(["📊 テクニカル詳細", "💼 ファンダメンタル詳細", "📄 財務諸表"])
+
+                with detail_tabs[0]:
+                    st.markdown("#### テクニカル指標一覧")
+                    if tech_result.summary.indicators:
+                        # 指標を表形式で表示
+                        indicators_df = pd.DataFrame([
+                            {"指標": k, "値": f"{v:.4f}"}
+                            for k, v in tech_result.summary.indicators.items()
+                        ])
+                        st.dataframe(indicators_df, use_container_width=True, hide_index=True)
+
+                with detail_tabs[1]:
+                    if fund_result.ratios:
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            st.markdown("##### 💰 バリュエーション")
+                            val = fund_result.ratios.valuation
+                            ratios_data = []
+                            if val.pe_ratio: ratios_data.append({"指標": "PER", "値": f"{val.pe_ratio:.2f}"})
+                            if val.pb_ratio: ratios_data.append({"指標": "PBR", "値": f"{val.pb_ratio:.2f}"})
+                            if val.ps_ratio: ratios_data.append({"指標": "PSR", "値": f"{val.ps_ratio:.2f}"})
+                            if val.dividend_yield: ratios_data.append({"指標": "配当利回り", "値": f"{val.dividend_yield:.2f}%"})
+                            if ratios_data:
+                                st.dataframe(pd.DataFrame(ratios_data), use_container_width=True, hide_index=True)
+
+                            st.markdown("##### 💧 流動性")
+                            liq = fund_result.ratios.liquidity
+                            liq_data = []
+                            if liq.current_ratio: liq_data.append({"指標": "流動比率", "値": f"{liq.current_ratio:.2f}"})
+                            if liq.quick_ratio: liq_data.append({"指標": "当座比率", "値": f"{liq.quick_ratio:.2f}"})
+                            if liq_data:
+                                st.dataframe(pd.DataFrame(liq_data), use_container_width=True, hide_index=True)
+
+                        with col2:
+                            st.markdown("##### 📈 収益性")
+                            prof = fund_result.ratios.profitability
+                            prof_data = []
+                            if prof.roe: prof_data.append({"指標": "ROE", "値": f"{prof.roe:.2f}%"})
+                            if prof.roa: prof_data.append({"指標": "ROA", "値": f"{prof.roa:.2f}%"})
+                            if prof.gross_margin: prof_data.append({"指標": "売上総利益率", "値": f"{prof.gross_margin:.2f}%"})
+                            if prof.net_margin: prof_data.append({"指標": "純利益率", "値": f"{prof.net_margin:.2f}%"})
+                            if prof_data:
+                                st.dataframe(pd.DataFrame(prof_data), use_container_width=True, hide_index=True)
+
+                            st.markdown("##### ⚖️ レバレッジ")
+                            lev = fund_result.ratios.leverage
+                            lev_data = []
+                            if lev.debt_to_equity: lev_data.append({"指標": "負債資本比率", "値": f"{lev.debt_to_equity:.2f}"})
+                            if lev.debt_to_assets: lev_data.append({"指標": "負債比率", "値": f"{lev.debt_to_assets:.2f}"})
+                            if lev_data:
+                                st.dataframe(pd.DataFrame(lev_data), use_container_width=True, hide_index=True)
+
+                with detail_tabs[2]:
+                    if include_financials:
+                        fs_tabs = st.tabs(["損益計算書", "貸借対照表", "キャッシュフロー"])
+
+                        with fs_tabs[0]:
+                            if fund_result.financials is not None and not fund_result.financials.empty:
+                                st.dataframe(fund_result.financials, use_container_width=True)
+                            else:
+                                st.info("データなし")
+
+                        with fs_tabs[1]:
+                            if fund_result.balance_sheet is not None and not fund_result.balance_sheet.empty:
+                                st.dataframe(fund_result.balance_sheet, use_container_width=True)
+                            else:
+                                st.info("データなし")
+
+                        with fs_tabs[2]:
+                            if fund_result.cash_flow is not None and not fund_result.cash_flow.empty:
+                                st.dataframe(fund_result.cash_flow, use_container_width=True)
+                            else:
+                                st.info("データなし")
+                    else:
+                        st.info("財務諸表を表示するには、サイドバーで「財務諸表を含む」を有効にしてください")
+
+elif analysis_mode == "⚖️ 銘柄比較":
+    st.markdown('<div class="section-header">⚖️ 銘柄比較モード</div>', unsafe_allow_html=True)
+
+    if len(symbols) < 2:
+        st.warning("⚠️ 比較するには2つ以上の銘柄を入力してください")
+    elif st.session_state.run_requested:
+        with st.spinner("分析中..."):
+            try:
+                # 分析実行
+                indicator_configs = [
+                    IndicatorConfig(name='SMA', params={'length': 20}),
+                    IndicatorConfig(name='RSI', params={'length': 14}),
+                ]
+
+                tech_request = TechnicalAnalysisRequest(
+                    symbols=symbols,
+                    period=period,
+                    interval=interval,
+                    indicators=indicator_configs,
+                    use_cache=True
+                )
+                tech_results = services['technical'].analyze(tech_request)
+
+                fund_request = FundamentalAnalysisRequest(
+                    symbols=symbols,
+                    include_financials=False,
+                    include_ratios=True
+                )
+                fund_results = services['fundamental'].analyze(fund_request)
+
+                st.session_state.analysis_results = {
+                    'technical': {r.symbol: r for r in tech_results},
+                    'fundamental': {r.symbol: r for r in fund_results}
+                }
+                st.session_state.run_requested = False
+
+            except Exception as e:
+                st.error(f"❌ 分析中にエラーが発生しました: {str(e)}")
+                st.session_state.run_requested = False
     else:
-        # If only one symbol, don't use tabs
-        tab_iter = [(list(indicator_frames.items())[0], None)]
-    
-    for (sym, df_with_indicators), symbol_tab in tab_iter:
-        with (symbol_tab or st.container()):
-            company_name = st.session_state.multi_companies.get(sym, sym)
-            st.markdown(f"**{sym} - {company_name}**")
+        st.info("👈 サイドバーから「🚀 分析実行」ボタンを押してください")
 
-            # Create and display the plot
-            with st.spinner("Creating visualization..."):
-                fig = visualizer.create_plot_figure(
-                    df_with_indicators,
-                    sym,
-                    indicator_configs,
-                    company_name=company_name,
-                    use_candlestick=use_candlestick
-                )
+    # 比較表示
+    if st.session_state.analysis_results:
+        # 比較表作成
+        comparison_data = []
+        for symbol in symbols:
+            tech_result = st.session_state.analysis_results['technical'].get(symbol)
+            fund_result = st.session_state.analysis_results['fundamental'].get(symbol)
 
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Plot generation failed for this symbol.")
-
-            # Data and download section
-            with st.expander("Show indicator data"):
-                st.dataframe(df_with_indicators)
-
-            col1, col2 = st.columns(2)
-            with col1:
-                csv = df_with_indicators.to_csv().encode("utf-8")
-                st.download_button(
-                    label=f"Download {sym} CSV",
-                    data=csv,
-                    file_name=f"{sym}_technical_analysis.csv",
-                    mime="text/csv",
-                    key=f"download_{sym}_csv_{int(time.time())}",  # Add timestamp to key to avoid conflicts
-                )
-            with col2:
-                if fig:
-                    # Convert Plotly figure to HTML for download
-                    html_string = fig.to_html(include_plotlyjs='cdn')
-                    st.download_button(
-                        label=f"Download {sym} Chart",
-                        data=html_string,
-                        file_name=f"{sym}_technical_analysis.html",
-                        mime="text/html",
-                        key=f"download_{sym}_chart_{int(time.time())}",  # Add timestamp to key to avoid conflicts
-                    )
-else:
-    st.info(
-        "Enter stock symbols in the sidebar and click 'Run Analysis' to generate technical insights."
-    )
-
-# --- Backtesting ---
-with st.expander("Backtest Trading Strategies", expanded=False):
-    st.subheader("Backtest Trading Strategies")
-    st.caption(
-        "Evaluate rule-based strategies using the primary symbol's historical data and review performance metrics."
-    )
-
-    if st.session_state.get("multi_data") is None or symbol not in st.session_state.get("multi_data", {}):
-        st.info("Run an analysis first to load price history for backtesting.")
-    else:
-        strategy_type = st.selectbox(
-            "Strategy Type",
-            ["Moving Average Crossover", "RSI Strategy"],
-            key="strategy_type",
-        )
-
-        # Initialize variables with default values
-        ma_short = 20
-        ma_long = 50
-        rsi_bt_length = 14
-        rsi_oversold = 30
-        rsi_overbought = 70
-
-        if strategy_type == "Moving Average Crossover":
-            ma_short = st.slider(
-                "Short MA Length", min_value=5, max_value=50, value=20, step=1, key="ma_short"
-            )
-            ma_long = st.slider(
-                "Long MA Length", min_value=10, max_value=200, value=50, step=5, key="ma_long"
-            )
-        else:
-            rsi_bt_length = st.slider(
-                "RSI Length", min_value=5, max_value=30, value=14, step=1, key="bt_rsi_length"
-            )
-            rsi_oversold = st.slider(
-                "Oversold Level", min_value=10, max_value=40, value=30, step=1, key="rsi_oversold"
-            )
-            rsi_overbought = st.slider(
-                "Overbought Level", min_value=60, max_value=90, value=70, step=1, key="rsi_overbought"
-            )
-
-        initial_capital = st.number_input(
-            "Initial Capital",
-            min_value=1000,
-            max_value=1_000_000,
-            value=10_000,
-            step=1000,
-            key="initial_capital",
-        )
-        commission_pct = st.number_input(
-            "Commission (%)",
-            min_value=0.0,
-            max_value=2.0,
-            value=0.1,
-            step=0.05,
-            key="commission_pct",
-        )
-        commission = commission_pct / 100
-
-        run_backtest = st.button("Run Backtest", type="primary", key="run_backtest_btn")
-
-        if run_backtest:
-            with st.spinner("Running backtest..."):
-                # Get data for primary symbol
-                primary_data = st.session_state.multi_data[symbol]
-
-                # Create strategy based on selected type
-                if strategy_type == "Moving Average Crossover":
-                    strategy = MovingAverageCrossoverStrategy(
-                        short_length=ma_short,
-                        long_length=ma_long
-                    )
-                    strategy_label = f"MA Crossover ({ma_short}/{ma_long})"
-                else:  # RSI Strategy
-                    strategy = RSIStrategy(
-                        rsi_length=rsi_bt_length,
-                        oversold=rsi_oversold,
-                        overbought=rsi_overbought
-                    )
-                    strategy_label = f"RSI ({rsi_bt_length}, {rsi_oversold}/{rsi_overbought})"
-
-                # Run backtest
-                engine = BacktestEngine(use_vectorbt=False)
-                result = engine.run(
-                    df=primary_data,
-                    strategy=strategy,
-                    initial_capital=initial_capital,
-                    commission=commission,
-                )
-
-                # Store results in session state
-                st.session_state.backtest_result = {
-                    "result": result,
-                    "strategy": strategy,
-                    "strategy_label": strategy_label,
-                    "figure": None,  # Will be generated on demand
+            if tech_result and fund_result:
+                row = {
+                    '銘柄': symbol,
+                    '企業名': fund_result.company_info.name,
+                    '株価': f"${tech_result.summary.latest_price:.2f}",
+                    '変化率': f"{tech_result.summary.price_change_pct:+.2f}%",
                 }
 
-                st.success("Backtest completed!")
+                if fund_result.ratios:
+                    if fund_result.ratios.valuation.pe_ratio:
+                        row['PER'] = f"{fund_result.ratios.valuation.pe_ratio:.2f}"
+                    if fund_result.ratios.valuation.pb_ratio:
+                        row['PBR'] = f"{fund_result.ratios.valuation.pb_ratio:.2f}"
+                    if fund_result.ratios.profitability.roe:
+                        row['ROE'] = f"{fund_result.ratios.profitability.roe:.2f}%"
+                    if fund_result.company_info.market_cap:
+                        row['時価総額'] = f"${fund_result.company_info.market_cap/1e9:.2f}B"
 
-        if st.session_state.get("backtest_result"):
-            stored_symbol = symbol
-            company_name = st.session_state.multi_companies.get(symbol, symbol) if 'multi_companies' in st.session_state else stored_symbol
-            result_payload = st.session_state.backtest_result
-            result = result_payload["result"]
-            strategy = result_payload["strategy"]
-            strategy_label = result_payload["strategy_label"]
+                comparison_data.append(row)
 
-            st.markdown(f"### Backtest Results: {stored_symbol} - {company_name}")
-            st.write(f"Strategy: {strategy_label}")
-
-            col1, col2, col3, col4, col5 = st.columns(5)
-            with col1:
-                st.metric("Total Return", f"{result['total_return']:.2%}")
-            with col2:
-                st.metric("Sharpe Ratio", f"{result['sharpe_ratio']:.2f}")
-            with col3:
-                st.metric("Max Drawdown", f"{result['max_drawdown']:.2%}")
-            with col4:
-                if result["win_rate"] is not None:
-                    st.metric("Win Rate", f"{result['win_rate']:.2%}")
-                else:
-                    st.metric("Win Rate", "N/A")
-            with col5:
-                profit_factor = result.get("profit_factor", 0)
-                if profit_factor == np.inf:
-                    st.metric("Profit Factor", "∞")
-                elif profit_factor is not None:
-                    st.metric("Profit Factor", f"{profit_factor:.2f}")
-                else:
-                    st.metric("Profit Factor", "N/A")
-
-            fig = result_payload.get("figure")
-            if fig is None:
-                from src.backtesting.engine import BacktestEngine
-
-                engine = BacktestEngine(use_vectorbt=False)
-                fig = engine.visualize_results(result, stored_symbol, strategy.name)
-                result_payload["figure"] = fig
-
-            st.pyplot(fig)
-
-            st.subheader("Trade Details")
-            trades = result.get("trades")
-            if isinstance(trades, pd.DataFrame) and not trades.empty:
-                st.dataframe(trades)
-            else:
-                st.info("No trades were executed during the backtest period.")
-
-            st.subheader("Signal Data")
-            st.dataframe(result["signals"])
-
-            csv = result["signals"].to_csv().encode("utf-8")
-            st.download_button(
-                label=f"Download {strategy.name} Signals",
-                data=csv,
-                file_name=f"{stored_symbol}_{strategy.name}_signals.csv",
-                mime="text/csv",
-                key=f"download_signals_{int(time.time())}",  # Add timestamp to key to avoid conflicts
+        if comparison_data:
+            st.markdown("### 📊 銘柄比較表")
+            st.dataframe(
+                pd.DataFrame(comparison_data),
+                use_container_width=True,
+                hide_index=True
             )
 
-st.markdown("---")
-st.markdown(
-    """
-    <div style=\"text-align: center;\">
-        <p>Developed with ❤️ using Streamlit | Data source: Yahoo Finance</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+            # 価格データの正規化と可視化
+            normalized_series: dict[str, pd.Series] = {}
+            for symbol in symbols:
+                tech_result = st.session_state.analysis_results['technical'].get(symbol)
+                if not tech_result or 'Close' not in tech_result.data:
+                    continue
+
+                close = tech_result.data['Close'].dropna()
+                if close.empty:
+                    continue
+
+                normalized_series[symbol] = (close / close.iloc[0]) * 100
+
+            if normalized_series:
+                normalized_df = pd.DataFrame(normalized_series)
+
+                st.markdown("### 📈 正規化価格パフォーマンス")
+                st.caption("各銘柄の初期値を100に正規化した推移です。")
+
+                perf_fig = go.Figure()
+                for symbol in symbols:
+                    if symbol not in normalized_series:
+                        continue
+
+                    series = normalized_df[symbol].dropna()
+                    if series.empty:
+                        continue
+
+                    perf_fig.add_trace(go.Scatter(
+                        x=series.index,
+                        y=series.values,
+                        mode='lines',
+                        name=symbol,
+                        line=dict(width=2)
+                    ))
+
+                perf_fig.update_layout(
+                    title="正規化パフォーマンス（初期値=100）",
+                    xaxis_title="日付",
+                    yaxis_title="正規化価格",
+                    height=480,
+                    hovermode='x unified'
+                )
+
+                st.plotly_chart(perf_fig, use_container_width=True)
+
+                if len(normalized_series) > 1:
+                    st.markdown("### 🔍 ピア平均との差分")
+                    st.caption("選択した銘柄と、それ以外の平均との乖離を表示します。正値でアウトパフォーム、負値でアンダーパフォームを示します。")
+
+                    focus_options = list(normalized_series.keys())
+                    default_focus = symbols[0] if symbols[0] in focus_options else focus_options[0]
+                    focus_symbol = st.selectbox(
+                        "比較対象銘柄",
+                        options=focus_options,
+                        index=focus_options.index(default_focus)
+                    )
+
+                    peer_symbols = [s for s in normalized_series.keys() if s != focus_symbol]
+
+                    if peer_symbols:
+                        comparison_df = normalized_df[[focus_symbol] + peer_symbols].dropna()
+
+                        if not comparison_df.empty:
+                            peer_mean = comparison_df[peer_symbols].mean(axis=1)
+                            diff_series = comparison_df[focus_symbol] - peer_mean
+
+                            diff_fig = go.Figure()
+                            diff_fig.add_trace(go.Scatter(
+                                x=diff_series.index,
+                                y=diff_series.values,
+                                mode='lines',
+                                name=f"{focus_symbol} - ピア平均",
+                                line=dict(width=2, color="#1f77b4"),
+                                fill='tozeroy',
+                                fillcolor='rgba(31, 119, 180, 0.25)'
+                            ))
+                            diff_fig.add_hline(y=0, line_dash="dash", line_color="gray")
+
+                            diff_fig.update_layout(
+                                title=f"{focus_symbol} vs ピア平均（正規化価格差）",
+                                xaxis_title="日付",
+                                yaxis_title="差分",
+                                height=320,
+                                hovermode='x unified'
+                            )
+
+                            st.plotly_chart(diff_fig, use_container_width=True)
+
+# ==================== フッター ====================
+st.sidebar.markdown("---")
+st.sidebar.markdown("""
+### 📚 使い方
+
+**🔍 統合分析**
+- Technical + Fundamental を統合表示
+- 各銘柄の包括的な分析が可能
+
+**⚖️ 銘柄比較**
+- 複数銘柄を並べて比較
+- 正規化パフォーマンスとピア平均との差分を確認
+
+---
+*Powered by yfinance, Plotly, Streamlit*
+""")

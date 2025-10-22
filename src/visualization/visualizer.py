@@ -146,8 +146,8 @@ class Visualizer:
                 logger.warning(f"Plotting function for subplot indicator {ind['name']} not found.")
 
         # Update layout
-        title = f'{symbol} - {company_name} - Technical Analysis' if company_name and company_name != symbol else f'{symbol} - Technical Analysis'
-        
+        title = 'Technical Analysis'
+
         fig.update_layout(
             title=title,
             xaxis_title='Date',
