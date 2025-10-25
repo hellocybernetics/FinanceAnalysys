@@ -517,9 +517,9 @@ if analysis_mode == "🔍 統合分析":
                             lev = fund_result.ratios.leverage
 
                             if liq.current_ratio:
-                                st.metric("流動比率", f"{liq.current_ratio:.2f}")
+                                st.metric("流動比率", f"{liq.current_ratio:.2f}倍")
                             if lev.debt_to_equity:
-                                st.metric("負債比率", f"{lev.debt_to_equity:.2f}")
+                                st.metric("負債資本比率", f"{lev.debt_to_equity:.2f}%")
 
                 # ========== 詳細タブ ==========
                 st.markdown("---")
@@ -553,8 +553,8 @@ if analysis_mode == "🔍 統合分析":
                             st.markdown("##### 💧 流動性")
                             liq = fund_result.ratios.liquidity
                             liq_data = []
-                            if liq.current_ratio: liq_data.append({"指標": "流動比率", "値": f"{liq.current_ratio:.2f}"})
-                            if liq.quick_ratio: liq_data.append({"指標": "当座比率", "値": f"{liq.quick_ratio:.2f}"})
+                            if liq.current_ratio: liq_data.append({"指標": "流動比率", "値": f"{liq.current_ratio:.2f}倍"})
+                            if liq.quick_ratio: liq_data.append({"指標": "当座比率", "値": f"{liq.quick_ratio:.2f}倍"})
                             if liq_data:
                                 st.dataframe(pd.DataFrame(liq_data), use_container_width=True, hide_index=True)
 
@@ -572,8 +572,8 @@ if analysis_mode == "🔍 統合分析":
                             st.markdown("##### ⚖️ レバレッジ")
                             lev = fund_result.ratios.leverage
                             lev_data = []
-                            if lev.debt_to_equity: lev_data.append({"指標": "負債資本比率", "値": f"{lev.debt_to_equity:.2f}"})
-                            if lev.debt_to_assets: lev_data.append({"指標": "負債比率", "値": f"{lev.debt_to_assets:.2f}"})
+                            if lev.debt_to_equity: lev_data.append({"指標": "負債資本比率 (D/E)", "値": f"{lev.debt_to_equity:.2f}%"})
+                            if lev.debt_to_assets: lev_data.append({"指標": "負債比率 (D/A)", "値": f"{lev.debt_to_assets * 100:.2f}%"})
                             if lev_data:
                                 st.dataframe(pd.DataFrame(lev_data), use_container_width=True, hide_index=True)
 
