@@ -108,9 +108,11 @@ def evaluate_pb_ratio(pb: float | None) -> tuple[str, str, str] | None:
 def evaluate_dividend_yield(div_yield: float | None) -> tuple[str, str, str] | None:
     if div_yield is None or div_yield < 0:
         return None
-    if div_yield >= 4:
+    # div_yield is in decimal format (0.04 = 4%)
+    div_yield_pct = div_yield * 100
+    if div_yield_pct >= 4:
         return '↑', 'positive', '高配当 (>4%)'
-    if div_yield >= 1:
+    if div_yield_pct >= 1:
         return '→', 'neutral', '平均的 (1-4%)'
     return '↓', 'negative', '低配当 (<1%)'
 
@@ -450,16 +452,16 @@ if analysis_mode == "🔍 統合分析":
                         if val and val.dividend_yield:
                             render_valuation_line(
                                 "配当利回り",
-                                f"{val.dividend_yield:.2f}%",
+                                f"{val.dividend_yield * 100:.2f}%",
                                 evaluate_dividend_yield(val.dividend_yield)
                             )
 
                         st.markdown("**📈 収益性**")
                         prof = fund_result.ratios.profitability
                         if prof.roe:
-                            st.metric("ROE", f"{prof.roe:.2f}%")
+                            st.metric("ROE", f"{prof.roe * 100:.2f}%")
                         if prof.net_margin:
-                            st.metric("純利益率", f"{prof.net_margin:.2f}%")
+                            st.metric("純利益率", f"{prof.net_margin * 100:.2f}%")
 
                 # --- 中央カラム：チャート ---
                 with col_center:
@@ -545,7 +547,7 @@ if analysis_mode == "🔍 統合分析":
                             if val.pe_ratio: ratios_data.append({"指標": "PER", "値": f"{val.pe_ratio:.2f}"})
                             if val.pb_ratio: ratios_data.append({"指標": "PBR", "値": f"{val.pb_ratio:.2f}"})
                             if val.ps_ratio: ratios_data.append({"指標": "PSR", "値": f"{val.ps_ratio:.2f}"})
-                            if val.dividend_yield: ratios_data.append({"指標": "配当利回り", "値": f"{val.dividend_yield:.2f}%"})
+                            if val.dividend_yield: ratios_data.append({"指標": "配当利回り", "値": f"{val.dividend_yield * 100:.2f}%"})
                             if ratios_data:
                                 st.dataframe(pd.DataFrame(ratios_data), use_container_width=True, hide_index=True)
 
@@ -561,10 +563,10 @@ if analysis_mode == "🔍 統合分析":
                             st.markdown("##### 📈 収益性")
                             prof = fund_result.ratios.profitability
                             prof_data = []
-                            if prof.roe: prof_data.append({"指標": "ROE", "値": f"{prof.roe:.2f}%"})
-                            if prof.roa: prof_data.append({"指標": "ROA", "値": f"{prof.roa:.2f}%"})
-                            if prof.gross_margin: prof_data.append({"指標": "売上総利益率", "値": f"{prof.gross_margin:.2f}%"})
-                            if prof.net_margin: prof_data.append({"指標": "純利益率", "値": f"{prof.net_margin:.2f}%"})
+                            if prof.roe: prof_data.append({"指標": "ROE", "値": f"{prof.roe * 100:.2f}%"})
+                            if prof.roa: prof_data.append({"指標": "ROA", "値": f"{prof.roa * 100:.2f}%"})
+                            if prof.gross_margin: prof_data.append({"指標": "売上総利益率", "値": f"{prof.gross_margin * 100:.2f}%"})
+                            if prof.net_margin: prof_data.append({"指標": "純利益率", "値": f"{prof.net_margin * 100:.2f}%"})
                             if prof_data:
                                 st.dataframe(pd.DataFrame(prof_data), use_container_width=True, hide_index=True)
 
@@ -674,7 +676,7 @@ elif analysis_mode == "⚖️ 銘柄比較":
                     if fund_result.ratios.valuation.pb_ratio:
                         row['PBR'] = f"{fund_result.ratios.valuation.pb_ratio:.2f}"
                     if fund_result.ratios.profitability.roe:
-                        row['ROE'] = f"{fund_result.ratios.profitability.roe:.2f}%"
+                        row['ROE'] = f"{fund_result.ratios.profitability.roe * 100:.2f}%"
                     if fund_result.company_info.market_cap:
                         row['時価総額'] = f"${fund_result.company_info.market_cap/1e9:.2f}B"
 
