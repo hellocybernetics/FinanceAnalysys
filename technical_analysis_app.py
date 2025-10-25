@@ -108,11 +108,10 @@ def evaluate_pb_ratio(pb: float | None) -> tuple[str, str, str] | None:
 def evaluate_dividend_yield(div_yield: float | None) -> tuple[str, str, str] | None:
     if div_yield is None or div_yield < 0:
         return None
-    # div_yield is in decimal format (0.04 = 4%)
-    div_yield_pct = div_yield * 100
-    if div_yield_pct >= 4:
+    # div_yield is already in percentage format (0.4 = 0.4%)
+    if div_yield >= 4:
         return '↑', 'positive', '高配当 (>4%)'
-    if div_yield_pct >= 1:
+    if div_yield >= 1:
         return '→', 'neutral', '平均的 (1-4%)'
     return '↓', 'negative', '低配当 (<1%)'
 
@@ -452,7 +451,7 @@ if analysis_mode == "🔍 統合分析":
                         if val and val.dividend_yield:
                             render_valuation_line(
                                 "配当利回り",
-                                f"{val.dividend_yield * 100:.2f}%",
+                                f"{val.dividend_yield:.2f}%",
                                 evaluate_dividend_yield(val.dividend_yield)
                             )
 
@@ -547,7 +546,7 @@ if analysis_mode == "🔍 統合分析":
                             if val.pe_ratio: ratios_data.append({"指標": "PER", "値": f"{val.pe_ratio:.2f}"})
                             if val.pb_ratio: ratios_data.append({"指標": "PBR", "値": f"{val.pb_ratio:.2f}"})
                             if val.ps_ratio: ratios_data.append({"指標": "PSR", "値": f"{val.ps_ratio:.2f}"})
-                            if val.dividend_yield: ratios_data.append({"指標": "配当利回り", "値": f"{val.dividend_yield * 100:.2f}%"})
+                            if val.dividend_yield: ratios_data.append({"指標": "配当利回り", "値": f"{val.dividend_yield:.2f}%"})
                             if ratios_data:
                                 st.dataframe(pd.DataFrame(ratios_data), use_container_width=True, hide_index=True)
 
